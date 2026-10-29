@@ -101,10 +101,16 @@ LLM 请求前可用：{LLM前类型}
 • 什么都不想管就删掉这条条件：插件不唤醒也不屏蔽，交给框架默认判定
 
 —— 设置项 ——
-基础：开关 / 备注 / 群号
+基础：开关 / 备注（必填）/ 群号（可留空）
+• 备注：每条规则的唯一标识，不能为空
+• 群号：留空的规则会照常保存，但不会在任何群生效，等以后填上群号再用
 时间：持续活跃 / 活跃间隔 / 唤醒冷却（-1 继承兜底）/ 活跃提示词 / 活跃方式 / 活跃范围
 指令：指令黑白名单 / 禁用系统指令 / 禁前唤醒 / 指令不唤醒
 其他：用户黑白名单 / 管理员豁免
+
+—— 复制规则 ——
+• 面板左侧每条规则右下角的「复制」：设置与条件照抄成一条新规则，
+  群号与备注会清空（这两项是每条规则专属的），填好备注就能用
 
 —— 提示词 ——
 • 两处位置可填：条件提示词、持续活跃提示词
@@ -520,6 +526,7 @@ class 群唤醒增强Pro(Star):
             ("api/rule/save", self.api_rule_save, ["POST"], "保存规则"),
             ("api/rule/delete", self.api_rule_delete, ["POST"], "删除规则"),
             ("api/rule/new", self.api_rule_new, ["POST"], "新建规则"),
+            ("api/rule/duplicate", self.api_rule_duplicate, ["POST"], "复制规则"),
             ("api/rule/move", self.api_rule_move, ["POST"], "调整规则顺序"),
             ("api/condition/new", self.api_condition_new, ["POST"], "新建条件"),
             ("api/settings/save", self.api_settings_save, ["POST"], "保存全局设置"),
@@ -610,8 +617,10 @@ class 群唤醒增强Pro(Star):
         规则 = models.规范化规则(原始)
         if 规则["id"] == "fallback":
             return self._失败("规则 ID 非法")
-        if not 规则["群号"]:
-            return self._失败("请至少填写一个群号（* 表示所有群）")
+        # 备注是规则的唯一标识，必填；群号可以留空——留空的规则不会进入群号索引，
+        # 也就不会在任何群生效，但会照样存着，等以后填上群号再用
+        if not 规则["备注"].strip():
+            return self._失败("请填写备注（备注用来区分每条规则）")
 
         async with self._锁:
             列表 = self.数据.setdefault("规则列表", [])
@@ -633,13 +642,43 @@ class 群唤醒增强Pro(Star):
         if isinstance(群号, str):
             群号 = [i.strip() for i in 群号.replace(",", "\n").split("\n") if i.strip()]
         备注 = str(body.get("备注") or "").strip()
+        if not 备注:
+            return self._失败("请填写备注（备注用来区分每条规则）")
 
         async with self._锁:
             现有 = self.数据.setdefault("规则列表", [])
-            新 = models.新规则(群号=list(群号), 备注=备注 or f"规则 {len(现有) + 1}")
+            新 = models.新规则(群号=list(群号), 备注=备注)
             现有.append(新)
             await self._保存()
         return self._成功({"规则": 新})
+
+    async def api_rule_duplicate(self) -> dict[str, Any]:
+        """复制一条规则：设置与条件照抄，群号与备注清空后另存为一条新规则。
+
+        新规则插在源规则后面；群号清空 → 不进入群号索引 → 在任何群都不生效，
+        但记录会保留，下次填上群号就能直接用。
+        """
+        body = await self._读取请求体()
+        规则ID = str(body.get("id") or "").strip()
+        if not 规则ID:
+            return self._失败("缺少规则 ID")
+        if 规则ID == "fallback":
+            return self._失败("兜底规则不支持复制")
+
+        async with self._锁:
+            列表 = self.数据.setdefault("规则列表", [])
+            位置 = next((i for i, r in enumerate(列表) if r.get("id") == 规则ID), -1)
+            if 位置 < 0:
+                return self._失败("未找到该规则")
+            源名称 = models.规则名称(列表[位置])
+            副本 = models.复制规则(列表[位置])
+            列表.insert(位置 + 1, 副本)
+            await self._保存()
+        logger.info(
+            f"【{插件名}】已复制规则「{源名称}」→ {副本['id']}"
+            f"（群号与备注已清空，暂不生效）"
+        )
+        return self._成功({"规则": 副本, "来源": 规则ID})
 
     async def api_rule_move(self) -> dict[str, Any]:
         """上下移动规则：顺序即优先级，越靠前越优先。"""
@@ -774,7 +813,7 @@ class 群唤醒增强Pro(Star):
             状态 = "✅" if 规则.get("开关") else "❌"
             群号 = "、".join(规则.get("群号") or []) or "无"
             行.append(
-                f"{序号}. {状态} {规则.get('备注', '')}｜群：{群号}"
+                f"{序号}. {状态} {models.规则名称(规则)}｜群：{群号}"
                 f"｜条件 {len(规则.get('条件') or [])} 条｜id：{规则.get('id', '')}"
             )
         兜底 = self._兜底()
@@ -798,7 +837,7 @@ class 群唤醒增强Pro(Star):
         已存在 = [i for i in 群号列表 if i in self.规则索引]
         if 已存在:
             yield event.plain_result(
-                f"❌ 群 {('、'.join(已存在))} 已有规则（{self.规则索引[已存在[0]].get('备注')}），"
+                f"❌ 群 {('、'.join(已存在))} 已有规则（{models.规则名称(self.规则索引[已存在[0]])}），"
                 f"请改用 /设置群规 修改，或在面板里调整规则顺序"
             )
             return
@@ -859,11 +898,13 @@ class 群唤醒增强Pro(Star):
         规则[键] = 新值
         await self._保存()
 
-        行 = [f"✅ 已更新规则「{规则.get('备注')}」：{键} = {self._展示值(新值)}"]
+        行 = [f"✅ 已更新规则「{models.规则名称(规则)}」：{键} = {self._展示值(新值)}"]
         if 实际操作 in ("add", "del", "rep"):
             行.append(f"• 列表操作：{实际操作}")
         if 键 in ("群号", "开关"):
             行.append("• 规则索引已重建，立即生效")
+        if 键 == "群号" and not 新值:
+            行.append("• ⚠️ 群号已清空：这条规则会保存着，但不会在任何群生效")
         if not 规则.get("开关") and 键 != "开关":
             行.append("• ⚠️ 该规则当前已关闭")
         yield event.plain_result("\n".join(行))
@@ -887,7 +928,7 @@ class 群唤醒增强Pro(Star):
             规则["群号"] = 剩余
             await self._保存()
             yield event.plain_result(
-                f"✅ 已把群 {群号} 从规则「{规则.get('备注')}」移除，"
+                f"✅ 已把群 {群号} 从规则「{models.规则名称(规则)}」移除，"
                 f"剩余群号：{'、'.join(剩余)}"
             )
             return
@@ -896,7 +937,7 @@ class 群唤醒增强Pro(Star):
         self.数据["规则列表"] = [r for r in 列表 if r.get("id") != 规则.get("id")]
         await self._保存()
         yield event.plain_result(
-            f"✅ 群 {群号} 是规则「{规则.get('备注')}」的最后一个群号，该规则已一并删除"
+            f"✅ 群 {群号} 是规则「{models.规则名称(规则)}」的最后一个群号，该规则已一并删除"
         )
 
     @filter.command("删除规则")
@@ -919,7 +960,7 @@ class 群唤醒增强Pro(Star):
         命中ID = {r.get("id") for r in 命中}
         self.数据["规则列表"] = [r for r in 列表 if r.get("id") not in 命中ID]
         await self._保存()
-        yield event.plain_result(f"✅ 已删除 {len(命中)} 条规则：{命中[0].get('备注')}")
+        yield event.plain_result(f"✅ 已删除 {len(命中)} 条规则：{models.规则名称(命中[0])}")
 
     @filter.command("移动规则")
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -961,7 +1002,7 @@ class 群唤醒增强Pro(Star):
         for 序号, 规则 in enumerate(列表, 1):
             状态 = "✅" if 规则.get("开关") else "❌"
             群号 = "、".join(规则.get("群号") or []) or "无"
-            行.append(f"{序号}. {状态} {规则.get('备注')}｜群：{群号}")
+            行.append(f"{序号}. {状态} {models.规则名称(规则)}｜群：{群号}")
         return "\n".join(行)
 
     # ------------------------------------------------------------------ 条件指令
@@ -1021,7 +1062,7 @@ class 群唤醒增强Pro(Star):
         位置 = f"L{len(条件列表)}" if 阶段 == "LLM" else f"第 {len(条件列表)} 条"
         阶段名 = "LLM 请求前" if 阶段 == "LLM" else "接收消息"
         yield event.plain_result(
-            f"✅ 已为「{规则.get('备注')}」的{阶段名}流水线添加条件 {类型文本}"
+            f"✅ 已为「{models.规则名称(规则)}」的{阶段名}流水线添加条件 {类型文本}"
             f"（{位置}，最后判断）\n"
             f"提示词：{条件['提示词'] or '（未设置，使用规则/全局默认）'}\n"
             f"要调顺序请用 /移动条件 <序号> 上|下"
@@ -1295,8 +1336,6 @@ class 群唤醒增强Pro(Star):
         if 原类型 is list:
             如果清空 = 值.strip().lower() in ("null", "none", "空", "")
             新项 = [] if 如果清空 else [i.strip() for i in 值.replace("，", ",").split(",") if i.strip()]
-            if 键 == "群号" and not 新项:
-                raise ValueError("群号不能为空，若要停用请把「开关」设为关")
             实际 = 操作 or "rep"
             if 实际 == "add":
                 结果 = list(原值 or [])
@@ -1361,7 +1400,7 @@ class 群唤醒增强Pro(Star):
     def _条件文本(self, 规则: dict[str, Any]) -> str:
         接收 = 规则.get("条件") or []
         LLM前 = 规则.get("LLM前条件") or []
-        名称 = 规则.get("备注")
+        名称 = models.规则名称(规则)
         行 = [f"🧩 规则「{名称}」· 接收消息流水线（{len(接收)} 条，从上到下判断）"]
         行.extend(self._条件行(序号, 条件) for 序号, 条件 in enumerate(接收, 1))
 
@@ -1390,7 +1429,7 @@ class 群唤醒增强Pro(Star):
 
         行 = [
             f"📋 群 {群号} 的规则（{来源}）",
-            f"• 备注：{规则.get('备注')}",
+            f"• 备注：{models.规则名称(规则)}",
             f"• 状态：{'✅ 开启' if 规则.get('开关') else '❌ 关闭'}",
             f"• 群号：{'、'.join(规则.get('群号') or []) or '无'}",
             "— 时间 —",

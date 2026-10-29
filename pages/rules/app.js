@@ -286,11 +286,14 @@
     list.replaceChildren();
 
     if (!rules.length) {
+      // 兜底规则开着，没配置的群还能被兜底接管；一旦关掉，插件对任何消息都不做处理
+      const 兜底开 = !!(S.data.兜底规则 && S.data.兜底规则.开关);
       list.append(
         el("div", {
-          class: "rule-sub",
-          style: "padding:8px 10px",
-          text: "还没有自定义规则，未配置的群走「兜底规则」。",
+          class: 兜底开 ? "rule-note" : "rule-note is-warn",
+          text: 兜底开
+            ? "还没有自定义规则，未配置的群走「兜底规则」。"
+            : "还没有自定义规则，且「兜底规则」已关闭，插件将不会处理任何消息",
         })
       );
     }
@@ -311,7 +314,8 @@
     });
     toggle.checked = !!rule.开关;
 
-    const groups = (rule.群号 || []).map((g) => (g === "*" ? "全部群" : g)).join("、") || "未绑定群号";
+    const groups =
+      (rule.群号 || []).map((g) => (g === "*" ? "全部群" : g)).join("、") || "未绑定群号（不生效）";
     const condCount = conditionsOf(rule, "recv").length;
     const llmCount = conditionsOf(rule, "llm").length;
     const condText = llmCount ? `${condCount} 条条件 · ${llmCount} 条 LLM 前` : `${condCount} 条条件`;
@@ -339,6 +343,25 @@
             onclick: () => moveRule(rule, 1),
           })
         );
+
+    // 「复制」不常用：只留一个小图标，挂在条目右下角，平时不抢位置
+    const copyBtn = fallback
+      ? null
+      : el("button", {
+          class: "rule-copy",
+          type: "button",
+          title: "复制这条规则：设置与条件照抄，群号与备注会清空",
+          "aria-label": "复制规则",
+          html:
+            '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">' +
+            '<rect x="4" y="1.3" width="6.7" height="6.7" rx="1.6" />' +
+            '<rect x="1.3" y="4" width="6.7" height="6.7" rx="1.6" />' +
+            "</svg>",
+          onclick: (e) => {
+            e.stopPropagation();
+            duplicateRule(rule);
+          },
+        });
 
     return el(
       "div",
@@ -378,7 +401,8 @@
             })
           : null
       ),
-      move
+      move,
+      copyBtn
     );
   }
 
@@ -410,6 +434,29 @@
       await load({ keepSelection: true });
     } catch (e) {
       toast(`移动失败：${e.message || e}`, "error");
+    }
+  }
+
+  /**
+   * 复制规则：设置与条件照抄，群号与备注（每条规则专属）由后端清空。
+   * 群号留空的规则不进群号索引，等于「存着但哪儿都不生效」，下次补上群号就能用。
+   */
+  async function duplicateRule(rule) {
+    if (S.dirty) {
+      const ok = await confirmDialog(
+        "有未保存的修改，复制会重新载入并丢弃它们。确定继续吗？",
+        { title: "有未保存的修改", okText: "丢弃并复制", danger: true }
+      );
+      if (!ok) return;
+    }
+    S.dirty = false;
+    try {
+      const data = await apiPost("api/rule/duplicate", { id: rule.id });
+      await load({ keepSelection: true });
+      if (data && data.规则) select(data.规则.id, { force: true });
+      toast("已复制为新规则：群号、备注已清空，填好备注再保存", "ok");
+    } catch (e) {
+      toast(`复制失败：${e.message || e}`, "error");
     }
   }
 
@@ -450,16 +497,34 @@
   }
 
   function renderHero(rule, fallback) {
+    // 「待命名」和提示条会跟着输入框实时变化，所以先建好节点再按当前值刷新
+    const nameChip = el("span", { class: "chipstat warn", text: "待命名" });
+    const nameNote = el("div", {
+      class: "hero-note",
+      text: "还没填备注：备注用来区分每条规则，保存前必须填写。",
+    });
+    const notes = el("div", { class: "hero-notes" }, nameNote);
+
+    const refreshHints = () => {
+      const empty = !fallback && !String(rule.备注 || "").trim();
+      nameChip.style.display = empty ? "" : "none";
+      nameNote.style.display = empty ? "" : "none";
+      notes.style.display = Array.from(notes.children).some((n) => n.style.display !== "none")
+        ? ""
+        : "none";
+    };
+
     const title = el("input", {
       class: "hero-title",
       value: fallback ? "兜底规则" : rule.备注 || "",
-      placeholder: "规则名称",
+      placeholder: "规则名称（必填）",
       readonly: fallback ? true : null,
       title: fallback ? "兜底规则名称固定" : "点击修改规则名称",
       oninput: (e) => {
         if (fallback) return;
         rule.备注 = e.target.value;
         markDirty();
+        refreshHints();
         const active = document.querySelector(".rule-item.active .rule-name");
         if (active) {
           const pill = active.querySelector(".pill");
@@ -478,6 +543,17 @@
     });
     switchInput.checked = !!rule.开关;
 
+    const 群数 = (rule.群号 || []).length;
+    if (!fallback && !群数) {
+      notes.append(
+        el("div", {
+          class: "hero-note",
+          text: "还没绑定群号：这条规则会照常保存，但不会在任何群生效，填上群号就生效。",
+        })
+      );
+    }
+    refreshHints();
+
     return el(
       "section",
       { class: "hero" },
@@ -495,7 +571,11 @@
                 text: `${conditionsOf(rule, "llm").length} 条 LLM 前`,
               })
             : null,
-          el("span", { class: "chipstat", text: `${(rule.群号 || []).length} 个群` }),
+          el("span", {
+            class: `chipstat ${群数 ? "" : "warn"}`,
+            text: 群数 ? `${群数} 个群` : "未绑定群号",
+          }),
+          nameChip,
           el("span", { class: "chipstat", text: fallback ? "内置" : `id ${rule.id}` })
         ),
         el(
@@ -505,7 +585,8 @@
           el("span", { class: "switch-track" }),
           el("span", { class: "switch-text", text: "启用" })
         )
-      )
+      ),
+      notes
     );
   }
 
@@ -802,7 +883,7 @@
           key: "群号",
           type: "groups",
           label: "生效群号",
-          hint: "一行一个群号；* 表示所有群",
+          hint: "一行一个群号；* 表示所有群；留空 = 先存着，这条规则不生效",
           hideInFallback: true,
         },
       ],
@@ -1451,10 +1532,14 @@
 
   async function save() {
     if (!S.draft || S.saving) return;
-    if (!isFallback(S.draft) && (!S.draft.群号 || !S.draft.群号.length)) {
-      toast("请至少填写一个群号（* 表示所有群）", "error");
+    // 备注必填（规则靠它区分）；群号可以留空——留空的规则存着但哪儿都不生效
+    if (!isFallback(S.draft) && !String(S.draft.备注 || "").trim()) {
+      toast("请先填写备注：备注用来区分每条规则", "error");
+      const title = $(".hero-title");
+      if (title) title.focus();
       return;
     }
+    const 无群号 = !isFallback(S.draft) && !(S.draft.群号 || []).length;
     S.saving = true;
     setBadge("保存中…");
     try {
@@ -1462,7 +1547,7 @@
       else await apiPost("api/rule/save", { 规则: S.draft });
       S.dirty = false;
       await load({ keepSelection: true });
-      toast("已保存", "ok");
+      toast(无群号 ? "已保存：还没填群号，这条规则暂时不会生效" : "已保存", "ok");
     } catch (e) {
       setBadge("保存失败", "dirty");
       toast(`保存失败：${e.message || e}`, "error");
@@ -1880,30 +1965,33 @@
 
     const groupEditor = linesControl({
       values: groups,
-      placeholder: "一行一个群号，例如：\n123456789",
+      placeholder: "一行一个群号，例如：\n123456789（可以先留空）",
       rows: 3,
       mono: true,
     });
     const nameInput = el("input", {
       class: "input",
-      placeholder: "例如：主群 / 测试群",
+      placeholder: "必填，例如：主群 / 测试群 / 备用模板",
       oninput: (e) => {
         备注 = e.target.value;
       },
     });
 
     const submit = async (e) => {
-      if (!groups.length) {
-        toast("请至少填写一个群号", "error");
+      const 名称 = 备注.trim();
+      // 备注必填（规则靠它区分）；群号允许留空——空群号的规则存着但不生效
+      if (!名称) {
+        toast("请填写备注：备注用来区分每条规则", "error");
+        nameInput.focus();
         return;
       }
       e.target.disabled = true;
       try {
-        const data = await apiPost("api/rule/new", { 群号: groups, 备注 });
+        const data = await apiPost("api/rule/new", { 群号: groups, 备注: 名称 });
         closeModal();
         await load();
         if (data && data.规则) select(data.规则.id, { force: true });
-        toast("已创建规则", "ok");
+        toast(groups.length ? "已创建规则" : "已创建规则（还没填群号，暂时不会生效）", "ok");
       } catch (err) {
         toast(`创建失败：${err.message || err}`, "error");
       } finally {
@@ -1917,18 +2005,20 @@
         el(
           "div",
           { class: "modal-body" },
+          el("div", { class: "modal-field-label" }, el("b", { text: "备注" }), el("span", { text: "必填" })),
+          nameInput,
           el(
             "div",
             { class: "modal-field-label" },
             el("b", { text: "群号" }),
-            el("span", { text: "一行一个；* 表示所有群" })
+            el("span", { text: "一行一个；* 表示所有群；可以留空" })
           ),
           groupEditor,
-          el("div", { class: "modal-field-label" }, el("b", { text: "备注" })),
-          nameInput,
           el("div", {
             class: "panel-sub",
-            text: "新规则会追加到列表末尾；规则顺序就是优先级，可在左侧用 ▲▼ 调整。",
+            text:
+              "群号留空的规则会照样保存，但不会在任何群生效，下次填上就能用。" +
+              "新规则追加到列表末尾；规则顺序就是优先级，可在左侧用 ▲▼ 调整。",
           })
         ),
         el(

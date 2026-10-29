@@ -408,6 +408,20 @@ body {
   white-space: nowrap;
 }
 
+/* 侧栏空状态说明：比规则副标题长，允许换行 */
+.rule-note {
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+/* 兜底规则也关掉时插件什么都不做，语气重一点 */
+.rule-note.is-warn {
+  color: #b04a72;
+  font-weight: 600;
+}
+
 .rule-flag {
   margin-top: 3px;
   font-size: 10.5px;
@@ -415,14 +429,14 @@ body {
   color: #c47a00;
 }
 
-/* 规则上下移动（列表顺序即优先级） */
+/* 规则上下移动（列表顺序即优先级）：靠上排，右下角留给「复制」 */
 
 .rule-move {
   display: flex;
   flex-direction: row;
   gap: 3px;
   flex: 0 0 auto;
-  align-self: center;
+  align-self: flex-start;
 }
 
 .mv-btn {
@@ -449,6 +463,42 @@ body {
 .mv-btn:disabled {
   opacity: 0.32;
   cursor: not-allowed;
+}
+
+/* 复制：不常点的功能，只画一个小图标，压在条目右下角，悬停才点亮 */
+.rule-copy {
+  position: absolute;
+  right: 8px;
+  bottom: 5px;
+  width: 17px;
+  height: 15px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: #8b93b5;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(74, 84, 150, 0.16);
+  border-radius: 6px;
+  opacity: 0.62;
+  transition: 0.12s ease;
+}
+
+.rule-copy svg {
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+}
+
+.rule-item:hover .rule-copy,
+.rule-item.active .rule-copy {
+  opacity: 1;
+}
+
+.rule-copy:hover {
+  color: #fff;
+  background: linear-gradient(130deg, #8f7bff, #56c9ee);
+  border-color: transparent;
 }
 
 .sidebar-foot {
@@ -612,18 +662,6 @@ body {
   box-shadow: var(--sticker);
 }
 
-.hero::after {
-  content: "";
-  position: absolute;
-  right: -40px;
-  top: -70px;
-  width: 200px;
-  height: 200px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 183, 3, 0.18), transparent 66%);
-  pointer-events: none;
-}
-
 .hero-top {
   position: relative;
   display: flex;
@@ -682,6 +720,33 @@ body {
   border: 2px solid rgba(123, 108, 255, 0.18);
   border-radius: 99px;
   padding: 2px 10px;
+}
+
+.chipstat.warn {
+  color: #b04a72;
+  background: #ffedf4;
+  border-color: rgba(226, 118, 160, 0.42);
+}
+
+/* 规则还没填群号 / 备注时的提醒（放在英雄区下方） */
+
+.hero-notes {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.hero-note {
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #a8436a;
+  background: #fff1f7;
+  border: 2px solid rgba(226, 118, 160, 0.3);
+  border-radius: 12px;
 }
 
 /* 面板 */

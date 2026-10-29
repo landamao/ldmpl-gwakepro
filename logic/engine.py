@@ -2,10 +2,12 @@
 
 一条消息进来后，先由 `main` 找到它所属的规则，再交给这里判定。
 
-判定分两段：
+判定分三段：
 1. **规则级**：开关、用户黑白名单、监听、指令、冷却、活跃窗口；
-2. **条件流水线**：规则里的 `条件` 按数组顺序从上到下逐条判断，第一条命中的
-   决定唤醒还是屏蔽，并带上该条件自己的提示词。
+2. **接收流水线**：规则里的 `条件` 按数组顺序从上到下逐条判断，第一条命中的
+   决定唤醒还是屏蔽，并带上该条件自己的提示词；
+3. **LLM 前流水线**：进入模型前再跑一遍 `LLM前条件`，只认屏蔽——
+   命中只终止这一轮回复，不打断其他插件对消息的处理。
 
 因此「唤醒优先还是屏蔽优先」不需要单独开关，调整条件顺序即可表达。
 """
@@ -19,9 +21,10 @@ from enum import Enum
 from typing import Any, Callable
 
 from . import acl, commands, patterns
+from .models import LLM前条件类型, 关闭即屏蔽类型
 from .text import 消息快照
 
-__all__ = ["动作", "判定结果", "判定上下文", "规则引擎", "概率通过"]
+__all__ = ["动作", "判定结果", "判定上下文", "规则引擎", "概率通过", "艾特引用命中"]
 
 
 class 动作(str, Enum):
@@ -112,6 +115,21 @@ def 概率通过(快照: 消息快照, 概率: float, 方式: list[str] | tuple[
         return True
     if "卡片分享" in 方式 and 快照.有卡片:
         return True
+    return False
+
+
+def 艾特引用命中(类型: str, 快照: 消息快照) -> bool:
+    """@ / 引用类条件共用的命中口径。
+
+    开启时用它判断是否唤醒，关闭时用它判断是否屏蔽——两边必须完全一致，
+    否则「关闭」会拦住本来不该拦的消息。
+    """
+    if 类型 == "艾特唤醒":
+        return bool(快照.有艾特自己)
+    if 类型 == "引用唤醒":
+        return bool(快照.有艾特自己 and 快照.有引用自己)
+    if 类型 in ("无艾特引用唤醒",):
+        return bool(快照.有引用自己 and not 快照.有艾特自己)
     return False
 
 
@@ -219,38 +237,80 @@ class 规则引擎:
 
     # ------------------------------------------------------------- 条件流水线
 
-    def 条件判定(self, ctx: 判定上下文, 规则: dict[str, Any]) -> 判定结果 | None:
-        """按数组顺序从上到下逐条判断，返回第一条命中的结果。"""
-        for 条件 in 规则.get("条件") or []:
-            if not isinstance(条件, dict) or not 条件.get("开关", True):
+    def 判定LLM前(self, ctx: 判定上下文, 规则: dict[str, Any]) -> 判定结果 | None:
+        """LLM 请求前的第二道闸门：只跑 `LLM前条件`，且只认屏蔽。
+
+        这一步发生在消息已经决定进入模型之后，因此不做唤醒判断，也不改唤醒标志：
+        命中就终止这一轮回复，其他插件对这条消息的处理不受影响。
+        """
+        if not 规则.get("开关", True):
+            return None
+        return self.条件判定(ctx, 规则, 规则.get("LLM前条件") or [], 阶段="LLM")
+
+    def 条件判定(
+        self,
+        ctx: 判定上下文,
+        规则: dict[str, Any],
+        条件列表: list[dict[str, Any]] | None = None,
+        阶段: str = "接收",
+    ) -> 判定结果 | None:
+        """按数组顺序从上到下逐条判断，返回第一条命中的结果。
+
+        `阶段="LLM"` 时只认屏蔽：唤醒类条件在这一步没有意义，直接跳过。
+        """
+        if 条件列表 is None:
+            条件列表 = 规则.get("条件") or []
+        for 条件 in 条件列表:
+            if not isinstance(条件, dict):
                 continue
-            结果 = self.单条判定(ctx, 规则, 条件)
-            if 结果 is not None:
-                return 结果
+            if 阶段 == "LLM" and str(条件.get("类型") or "") not in LLM前条件类型:
+                continue
+            结果 = self.单条判定(ctx, 规则, 条件, 阶段)
+            if 结果 is None:
+                continue
+            if 阶段 == "LLM" and 结果.动作 != 动作.STOP:
+                continue
+            return 结果
         return None
 
     def 单条判定(
-        self, ctx: 判定上下文, 规则: dict[str, Any], 条件: dict[str, Any]
+        self,
+        ctx: 判定上下文,
+        规则: dict[str, Any],
+        条件: dict[str, Any],
+        阶段: str = "接收",
     ) -> 判定结果 | None:
         类型 = str(条件.get("类型") or "")
         快照 = ctx.快照
         提示词 = str(条件.get("提示词") or "").strip()
         提示词临时 = bool(条件.get("提示词临时", True))
+        豁免 = ctx.管理员 and bool(规则.get("管理员豁免", True))
 
         def 唤醒(详情: str = "") -> 判定结果:
             return 判定结果(动作.WAKE, 类型, 规则, 详情, 提示词, 提示词临时, 条件)
 
-        def 屏蔽(详情: str = "") -> 判定结果:
+        def 屏蔽(详情: str = "") -> 判定结果 | None:
+            # 设置项写明「管理员不受屏蔽条件限制」，所有屏蔽类条件走同一套豁免
+            if 豁免:
+                return None
             return 判定结果(动作.STOP, 类型, 规则, 详情, 提示词, 提示词临时, 条件)
 
-        if 类型 == "艾特唤醒":
-            return 唤醒() if 快照.有艾特自己 else None
+        # 关闭的条件一般等于跳过；但接收流水线里的 @ / 引用类唤醒框架自己也会判定，
+        # 只跳过的话机器人照样会被叫起来，所以它们关闭时按同样口径转成屏蔽。
+        # LLM 前流水线只有屏蔽，「关闭」就是「不拦这条」，保持跳过。
+        if not 条件.get("开关", True):
+            if 阶段 == "LLM":
+                return None
+            if 类型 in 关闭即屏蔽类型 and 艾特引用命中(类型, 快照):
+                return 屏蔽("该条件已关闭，命中即屏蔽")
+            return None
 
-        if 类型 == "引用唤醒":
-            return 唤醒() if (快照.有艾特自己 and 快照.有引用自己) else None
-
-        if 类型 == "无艾特引用唤醒":
-            return 唤醒() if (快照.有引用自己 and not 快照.有艾特自己) else None
+        if 类型 in 关闭即屏蔽类型:
+            if not 艾特引用命中(类型, 快照):
+                return None
+            if 阶段 == "LLM":
+                return 屏蔽("LLM 请求前拦截")
+            return 唤醒()
 
         if 类型 == "唤醒正则":
             命中 = patterns.匹配详情(条件.get("正则"), 快照.完整文本)
@@ -276,9 +336,10 @@ class 规则引擎:
         if 类型 == "屏蔽戳一戳":
             return 屏蔽() if 快照.有戳一戳 else None
 
+        if 类型 == "屏蔽空消息链":
+            return 屏蔽("空消息链") if 快照.段数量 == 0 else None
+
         if 类型 == "其余屏蔽":
-            if ctx.管理员 and 规则.get("管理员豁免", True):
-                return None
             return 屏蔽()
 
         return None
@@ -325,9 +386,8 @@ class 规则引擎:
             if not 通过 and not 豁免:
                 return 判定结果(动作.STOP, "指令不在名单内", 规则, "、".join(候选))
 
-        if 规则.get("禁前唤醒") and ctx.使用前缀 and not 豁免 and not 候选:
-            return 判定结果(动作.STOP, "禁止前缀唤醒", 规则, 首词)
-
+        # 「禁前唤醒」不在这里处理：它只负责不叫醒机器人，不该终止事件，
+        # 否则别的插件就收不到这条消息了 —— 统一放到 LLM 请求前的钩子里拦。
         return None
 
     # ------------------------------------------------------------------ 执行

@@ -744,6 +744,41 @@ body {
   padding: 14px 18px 16px;
 }
 
+/* LLM 请求前板块：暖色，与接收消息区分开 */
+
+.panel.llm .panel-head {
+  background: linear-gradient(180deg, #fff9ee, #ffffff);
+}
+
+.panel.llm .panel-icon {
+  color: #a8690a;
+  background: #fff6e4;
+  border-color: rgba(255, 183, 3, 0.3);
+}
+
+.panel.llm .pipeline::before {
+  background: linear-gradient(180deg, #ffd58f, #ffb7c9 60%, #d9c8ff 100%);
+}
+
+.cond-note {
+  margin-top: 8px;
+  padding: 7px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #d93a5c;
+  background: #fff5f7;
+  border: 1px dashed rgba(255, 105, 140, 0.6);
+  border-radius: 10px;
+}
+
+.cond-note.muted {
+  color: #7b8199;
+  font-weight: 500;
+  background: #f7f8fc;
+  border-color: rgba(123, 129, 153, 0.4);
+}
+
 /* ---------------------------------------------------------------- 条件流水线 */
 
 .pipeline {
@@ -1376,6 +1411,23 @@ body {
   width: 100%;
 }
 
+.slider-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.slider-row .input.num {
+  flex: 0 0 92px;
+  text-align: center;
+}
+
+.slider-row .unit {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 input[type="range"] {
   flex: 1;
   height: 10px;
@@ -1512,6 +1564,13 @@ input[type="range"]::-moz-range-thumb {
   padding: 12px 18px;
   border-top: 2px dashed rgba(74, 84, 150, 0.12);
   background: #fcfbff;
+}
+
+.confirm-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--ink-soft);
 }
 
 /* 条件类型选择 */

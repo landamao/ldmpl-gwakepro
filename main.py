@@ -2,9 +2,14 @@
 
 按群聊精细控制「什么消息能唤醒机器人、什么消息要被屏蔽」。
 
-核心模型：一条规则 = 一批设置 + 一条**条件流水线**。
-条件是数组，从上到下逐条判断，第一条命中的决定唤醒还是屏蔽；
-唤醒类条件可以带自己的 system_reminder 提示词。
+核心模型：一条规则 = 一批设置 + 两条**条件流水线**。
+
+1. 接收流水线（`条件`）：消息进来时逐条判断，第一条命中的决定唤醒还是屏蔽；
+   唤醒类条件可以带自己的 system_reminder 提示词。
+2. LLM 请求前流水线（`LLM前条件`）：进入模型前再判一次，只做屏蔽——
+   屏蔽类条件与 @ / 引用三类唤醒（同名，动作变屏蔽），命中只终止这一轮回复，
+   不打断其他插件对消息的处理
+   （走 `on_waiting_llm_request` 钩子，用框架默认优先级）。
 
 其它要点：
 
@@ -48,31 +53,34 @@ except Exception:  # noqa: BLE001
 
 插件名 = "群唤醒增强Pro"
 入口优先级 = 6666
-钩子优先级 = 66666
 
 唤醒类型 = "、".join(models.唤醒条件类型)
 屏蔽类型 = "、".join(models.屏蔽条件类型)
+LLM前类型 = "、".join(models.LLM前条件类型)
 
 帮助文本 = f"""
 📖 群唤醒增强 Pro · 帮助
 
-一条规则 = 一批设置 + 一条「条件流水线」。
-条件从上到下逐条判断，第一条命中的决定「唤醒」还是「屏蔽」；
+一条规则 = 一批设置 + 两条「条件流水线」。
+① 接收消息流水线：消息进来时逐条判断，第一条命中的决定「唤醒」还是「屏蔽」；
+② LLM 请求前流水线：进入模型前再判一次，只做屏蔽（屏蔽类 + @/引用三类唤醒），
+   不打断其他插件，命令里用 L 开头的序号（L1、L2…）。
 唤醒类条件还可以写自己的 system_reminder 提示词，注入到那一轮对话开头。
 
 —— 管理员指令 ——
-• /群规则 [群号]                 查看规则：设置 + 条件流水线
+• /群规则 [群号]                 查看规则：设置 + 两条流水线
 • /规则列表                     列出全部规则（含群号，顺序即优先级）
 • /添加群规 <群号> [备注]         新建规则
 • /设置群规 <键> <值> [群号] [操作]  修改设置项；列表字段默认替换，可 add/del/rep
 • /删除群规 <群号>               把群号从规则里移除（最后一个则整条删除）
 • /删除规则 <备注或ID>           直接删除整条规则
 • /移动规则 <备注或ID> <上|下>    调整规则顺序（越靠前越优先）
-• /条件列表 [群号]               按判断顺序列出条件
+• /条件列表 [群号]               按判断顺序列出两条流水线
 • /添加条件 <类型> [提示词] [群号]
-• /删除条件 <序号> [群号]
-• /移动条件 <序号> <上|下> [群号]
-• /设置条件 <序号> <字段> <值> [群号]
+   类型前加 llm: 表示加到 LLM 请求前流水线，例如 /添加条件 llm:屏蔽正则
+• /删除条件 <序号|L序号> [群号]
+• /移动条件 <序号|L序号> <上|下> [群号]
+• /设置条件 <序号|L序号> <字段> <值> [群号]
 • /所有指令 / /刷新指令           查看、重扫框架指令表
 • /设置活跃 <秒> / /停止活跃      自定义活跃时长
 • /群规帮助                     本帮助
@@ -80,18 +88,31 @@ except Exception:  # noqa: BLE001
 —— 条件类型 ——
 唤醒：{唤醒类型}
 屏蔽：{屏蔽类型}
+LLM 请求前可用：{LLM前类型}
+
+—— 关于「@ / 引用」三类唤醒 ——
+• 艾特唤醒：消息里 @ 了机器人
+• 引用唤醒：同时 @机器人 并引用机器人消息
+• 无艾特引用唤醒：只引用机器人消息（不 @）
+• 两条流水线里名字完全一样，只是动作不同：
+  接收流水线 —— 开启 = 命中即唤醒，关闭 = 命中即屏蔽此消息
+  LLM 前流水线 —— 开启 = 命中即屏蔽这条回复，关闭 = 不拦
+• 「关闭 = 屏蔽」的原因：框架自身会把 @ / 引用当唤醒，插件只跳过的话照样会回复
+• 什么都不想管就删掉这条条件：插件不唤醒也不屏蔽，交给框架默认判定
 
 —— 设置项 ——
 基础：开关 / 备注 / 群号
 时间：持续活跃 / 活跃间隔 / 唤醒冷却（-1 继承兜底）/ 活跃提示词 / 活跃方式 / 活跃范围
 指令：指令黑白名单 / 禁用系统指令 / 禁前唤醒 / 指令不唤醒
-其他：用户黑白名单 / 屏蔽空消息链 / 管理员豁免 / 唤醒提示词
+其他：用户黑白名单 / 管理员豁免 / standby 监听提示词
 
 —— 提示词 ——
-• 四类位置可填：条件提示词、持续活跃提示词、其他唤醒提示词、全局提示词
+• 三处位置可填：条件提示词、持续活跃提示词、standby 监听提示词
+• 统一规则：留空 = 不注入（不再回落），想要默认文案点「恢复默认」
+• 「standby 监听提示词」只在 standby 工具监听命中时注入，别的唤醒不用它
 • 每条提示词都有「临时」开关：开 = 只对本次请求生效（不写入对话历史），关 = 持久写入
-• 条件里留空 = 不注入；规则/全局留空则逐级回落
-• 面板的「恢复默认」：规则里取全局设置，全局设置里取内置默认文案
+• 全局设置里那 4 条只是「恢复默认」的模板，自己不参与注入；
+  想整体关掉注入用全局的「提示词注入」开关
 
 —— 概率唤醒 ——
 • 概率：0~1，例如 0.05 表示 5%
@@ -313,12 +334,7 @@ class 群唤醒增强Pro(Star):
 
             快照 = 构建快照(event)
 
-            if 快照.段数量 == 0:
-                if 规则.get("屏蔽空消息链"):
-                    logger.info(f"【{插件名}】群 {群号} 空消息链，已屏蔽")
-                    event.stop_event()
-                return
-
+            # 空消息链不再单独短路：交给流水线里的「屏蔽空消息链」条件判断
             ctx = self._构建上下文(event, 快照=快照)
             self._记录群(ctx, event)
             self._周期性清理(ctx.现在)
@@ -331,8 +347,9 @@ class 群唤醒增强Pro(Star):
                     f"【{插件名}】群 {群号} 用户「{ctx.发送者名}({ctx.发送者})」"
                     f"消息 | {event.get_message_outline()} | {结果.描述()}"
                 )
-            elif self._全局().get("日志详细"):
-                logger.info(f"【{插件名}】群 {群号} {结果.描述()}")
+            else:
+                # 未命中任何条件这类明细只打 debug，需要就把日志级别调成 DEBUG
+                logger.debug(f"【{插件名}】群 {群号} {结果.描述()}")
 
             await self._保存群目录()
 
@@ -341,12 +358,14 @@ class 群唤醒增强Pro(Star):
 
     # ------------------------------------------------------------------ 钩子
 
-    @filter.on_waiting_llm_request(priority=钩子优先级)
+    @filter.on_waiting_llm_request()
     async def 进入LLM前(self, event: AstrMessageEvent) -> None:
         """进入 LLM 流程前的最后一道闸门。
 
         有些场景（别的插件重新唤醒、指令处理器没有发消息）会让本不该进入 LLM 的
-        事件继续走到这里，因此再判一次。
+        事件继续走到这里，因此再判一次；随后再跑 `LLM前条件` 流水线。
+
+        这一层刻意不加优先级，用框架默认值，保证和其他插件的等待钩子同一批次执行。
         """
         try:
             群号 = str(event.get_group_id() or "")
@@ -360,6 +379,7 @@ class 群唤醒增强Pro(Star):
             if ctx.管理员 and 规则.get("管理员豁免", True):
                 return
 
+            # 禁前唤醒只拦「进入 LLM」这一步，不终止事件：别的插件照常能看到这条消息
             if 规则.get("禁前唤醒") and ctx.使用前缀 and not ctx.是指令:
                 logger.info(f"【{插件名}】群 {群号} 禁止前缀唤醒：{ctx.快照.指令文本}")
                 event.stop_event()
@@ -382,11 +402,25 @@ class 群唤醒增强Pro(Star):
             ):
                 logger.info(f"【{插件名}】群 {群号} 用户黑白名单屏蔽：{ctx.发送者}")
                 event.stop_event()
+                return
+
+            # LLM 请求前流水线：只做屏蔽，命中就终止这一轮回复
+            结果 = self.引擎.判定LLM前(ctx, 规则)
+            if 结果 is not None:
+                event.set_extra("qwb_屏蔽原因", 结果.原因)
+                logger.info(f"【{插件名}】群 {群号} LLM 前流水线 | {结果.描述()}")
+                event.stop_event()
         except Exception as e:  # noqa: BLE001
             logger.error(f"【{插件名}】LLM 前置检查出错：{e}", exc_info=True)
 
     @filter.on_llm_request()
     async def 注入提示词(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
+        """把一段 <system_reminder> 挂到本轮请求最前面。
+
+        所有提示词位置一律「留空 = 不注入」，规则与条件之间没有回落：
+        条件命中时用条件自己那段，活跃 / 监听这类没有命中条件的唤醒用规则里
+        「持续活跃提示词」「standby 监听提示词」。全局那 4 条只是「恢复默认」的模板。
+        """
         try:
             全局 = self._全局()
             if not 全局.get("提示词注入", True):
@@ -398,24 +432,19 @@ class 群唤醒增强Pro(Star):
 
             提示词 = str(event.get_extra("qwb_唤醒提示词", "") or "").strip()
             临时 = bool(event.get_extra("qwb_提示词临时", True))
-            if 命中条件:
-                # 命中条件：提示词由条件决定，留空就是「不注入」，不回落
-                if not 提示词:
-                    return
-            else:
-                # 活跃 / 监听这类没有命中条件的唤醒才走规则与全局默认
-                活跃类 = "活跃" in 来源
-                规则键 = "活跃提示词" if 活跃类 else "唤醒提示词"
-                if not 提示词:
+            if not 提示词 and not 命中条件:
+                # 没有命中条件的唤醒只有两种会注入：活跃窗口、standby 监听；
+                # 其它来源（别的插件重新唤醒等）一律不注入，免得摸不清什么时候冒出来
+                if "活跃" in 来源:
+                    规则键 = "活跃提示词"
+                elif "监听" in 来源:
+                    规则键 = "唤醒提示词"
+                else:
+                    规则键 = ""
+                if 规则键:
                     提示词 = str(规则.get(规则键) or "").strip()
                     if 提示词:
                         临时 = bool(规则.get(f"{规则键}临时", True))
-                if not 提示词:
-                    键 = self._提示词键(来源) if 来源 else ""
-                    if 键:
-                        提示词 = str(全局.get(键) or "").strip()
-                        if 提示词:
-                            临时 = bool(全局.get(f"{键}临时", True))
             if not 提示词:
                 return
 
@@ -426,17 +455,6 @@ class 群唤醒增强Pro(Star):
             event.set_extra("qwb_已注入提示词", True)
         except Exception as e:  # noqa: BLE001
             logger.error(f"【{插件名}】注入提示词出错：{e}", exc_info=True)
-
-    @staticmethod
-    def _提示词键(来源: str) -> str:
-        """按唤醒来源选出全局设置里对应的提示词字段。"""
-        if "监听" in 来源:
-            return "监听唤醒提示词"
-        if "引用" in 来源:
-            return "引用唤醒提示词"
-        if "正则" in 来源 or "艾特" in 来源:
-            return "提及唤醒提示词"
-        return "主动唤醒提示词"
 
     @filter.on_llm_response()
     async def LLM响应后(self, event: AstrMessageEvent, _resp: Any = None) -> None:
@@ -586,9 +604,16 @@ class 群唤醒增强Pro(Star):
             "指令": self.所有指令,
             "系统指令": sorted(指令工具.系统指令),
             "条件类型": [
-                {"类型": 名称, "动作": 值["动作"], "说明": 值["说明"], "参数": 值["参数"]}
+                {
+                    "类型": 名称,
+                    "动作": 值["动作"],
+                    "阶段": list(值["阶段"]),
+                    "说明": 值["说明"],
+                    "参数": 值["参数"],
+                }
                 for 名称, 值 in models.条件类型.items()
             ],
+            "LLM前条件类型": list(models.LLM前条件类型),
             "默认提示词": dict(models.默认提示词),
             "选项": {
                 "概率方式": list(models.概率方式可选),
@@ -702,6 +727,9 @@ class 群唤醒增强Pro(Star):
         类型 = str(body.get("类型") or "艾特唤醒")
         if 类型 not in models.条件类型:
             return self._失败(f"未知条件类型：{类型}")
+        if str(body.get("阶段") or "接收").strip().lower() in ("llm", "llm前"):
+            if 类型 not in models.LLM前条件类型:
+                return self._失败(f"「{类型}」是唤醒类条件，只能放在接收消息流水线里")
         条件 = models.新条件(
             类型,
             提示词=str(body.get("提示词") or "").strip(),
@@ -836,11 +864,14 @@ class 群唤醒增强Pro(Star):
             实际操作 = 目标文本.lower()
             目标文本 = ""
 
-        if 键 == "条件":
-            yield event.plain_result("❌ 条件请用 /添加条件、/设置条件、/删除条件 管理")
+        if 键 in ("条件", "LLM前条件"):
+            yield event.plain_result(
+                "❌ 条件请用 /添加条件、/设置条件、/删除条件 管理"
+                "（LLM 请求前流水线加 llm: 前缀，或用 L 开头的序号）"
+            )
             return
         if 键 not in models.默认规则:
-            可用 = "、".join(k for k in models.默认规则 if k not in ("id", "条件"))
+            可用 = "、".join(k for k in models.默认规则 if k not in ("id", "条件", "LLM前条件"))
             yield event.plain_result(f"❌ 不存在的字段「{键}」\n可用字段：\n{可用}")
             return
         if 键 == "id":
@@ -990,11 +1021,26 @@ class 群唤醒增强Pro(Star):
         提示词: str = None,
         群号: str = None,
     ):
-        """新增条件（追加到流水线末尾）：/添加条件 <类型> [提示词] [群号]"""
-        类型 = str(类型).strip()
-        if 类型 not in models.条件类型:
+        """新增条件：/添加条件 <类型> [提示词] [群号]
+        类型前加 llm: 表示加到 LLM 请求前流水线，例如 llm:屏蔽正则
+        """
+        类型文本 = str(类型).strip()
+        阶段 = "接收"
+        for 前缀 in ("llm:", "LLM:", "l:", "L:"):
+            if 类型文本.startswith(前缀):
+                阶段 = "LLM"
+                类型文本 = 类型文本[len(前缀) :].strip()
+                break
+
+        if 类型文本 not in models.条件类型:
             yield event.plain_result(
-                f"❌ 未知条件类型「{类型}」\n唤醒：{唤醒类型}\n屏蔽：{屏蔽类型}"
+                f"❌ 未知条件类型「{类型文本}」\n唤醒：{唤醒类型}\n屏蔽：{屏蔽类型}"
+            )
+            return
+        if 阶段 == "LLM" and 类型文本 not in models.LLM前条件类型:
+            yield event.plain_result(
+                f"❌ 「{类型文本}」是唤醒类条件，只能放在接收消息流水线里\n"
+                f"LLM 请求前只接受屏蔽类条件（以及 @ / 引用三类唤醒）：{LLM前类型}"
             )
             return
 
@@ -1003,12 +1049,16 @@ class 群唤醒增强Pro(Star):
             yield event.plain_result(错误)
             return
 
-        条件列表 = 规则.setdefault("条件", [])
-        条件 = models.新条件(类型, 提示词=str(提示词 or ""))
+        键 = "LLM前条件" if 阶段 == "LLM" else "条件"
+        条件列表 = 规则.setdefault(键, [])
+        条件 = models.新条件(类型文本, 提示词=str(提示词 or ""))
         条件列表.append(条件)
         await self._保存()
+        位置 = f"L{len(条件列表)}" if 阶段 == "LLM" else f"第 {len(条件列表)} 条"
+        阶段名 = "LLM 请求前" if 阶段 == "LLM" else "接收消息"
         yield event.plain_result(
-            f"✅ 已为「{规则.get('备注')}」添加条件 {类型}（第 {len(条件列表)} 条，最后判断）\n"
+            f"✅ 已为「{规则.get('备注')}」的{阶段名}流水线添加条件 {类型文本}"
+            f"（{位置}，最后判断）\n"
             f"提示词：{条件['提示词'] or '（未设置，使用规则/全局默认）'}\n"
             f"要调顺序请用 /移动条件 <序号> 上|下"
         )
@@ -1016,46 +1066,48 @@ class 群唤醒增强Pro(Star):
     @filter.command("删除条件")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def 指令_删除条件(self, event: AstrMessageEvent, 序号: str, 群号: str = None):
-        """删除条件：/删除条件 <序号> [群号]"""
+        """删除条件：/删除条件 <序号|L序号> [群号]"""
         规则, 错误 = self._查找规则(群号, event)
         if 规则 is None:
             yield event.plain_result(错误)
             return
 
-        条件列表 = 规则.get("条件") or []
         try:
-            位置 = int(str(序号).strip())
-        except (TypeError, ValueError):
-            yield event.plain_result("❌ 序号必须是整数，用 /条件列表 查看")
+            阶段, 条件列表, 位置 = self._解析条件目标(规则, 序号)
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
             return
+        阶段名 = "LLM 请求前" if 阶段 == "LLM" else "接收消息"
         if not (1 <= 位置 <= len(条件列表)):
-            yield event.plain_result(f"❌ 序号超出范围（共 {len(条件列表)} 条）")
+            yield event.plain_result(f"❌ 序号超出范围（{阶段名}流水线共 {len(条件列表)} 条）")
             return
 
+        键 = "LLM前条件" if 阶段 == "LLM" else "条件"
         目标 = 条件列表[位置 - 1]
-        规则["条件"] = [c for c in 条件列表 if c.get("id") != 目标.get("id")]
+        规则[键] = [c for c in 条件列表 if c.get("id") != 目标.get("id")]
         await self._保存()
-        yield event.plain_result(f"✅ 已删除第 {位置} 条条件：{目标.get('类型')}")
+        标签 = f"L{位置}" if 阶段 == "LLM" else str(位置)
+        yield event.plain_result(f"✅ 已删除 {标签} 条件：{目标.get('类型')}")
 
     @filter.command("移动条件")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def 指令_移动条件(
         self, event: AstrMessageEvent, 序号: str, 方向: str, 群号: str = None
     ):
-        """调整条件顺序：/移动条件 <序号> <上|下> [群号]"""
+        """调整条件顺序：/移动条件 <序号|L序号> <上|下> [群号]"""
         规则, 错误 = self._查找规则(群号, event)
         if 规则 is None:
             yield event.plain_result(错误)
             return
 
-        条件列表 = 规则.get("条件") or []
         try:
-            位置 = int(str(序号).strip())
-        except (TypeError, ValueError):
-            yield event.plain_result("❌ 序号必须是整数，用 /条件列表 查看")
+            阶段, 条件列表, 位置 = self._解析条件目标(规则, 序号)
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
             return
+        阶段名 = "LLM 请求前" if 阶段 == "LLM" else "接收消息"
         if not (1 <= 位置 <= len(条件列表)):
-            yield event.plain_result(f"❌ 序号超出范围（共 {len(条件列表)} 条）")
+            yield event.plain_result(f"❌ 序号超出范围（{阶段名}流水线共 {len(条件列表)} 条）")
             return
 
         方向文本 = str(方向 or "").strip().lower()
@@ -1071,7 +1123,7 @@ class 群唤醒增强Pro(Star):
             return
 
         条件列表[位置 - 1], 条件列表[目标位置] = 条件列表[目标位置], 条件列表[位置 - 1]
-        规则["条件"] = 条件列表
+        规则["LLM前条件" if 阶段 == "LLM" else "条件"] = 条件列表
         await self._保存()
         yield event.plain_result(self._条件文本(规则))
 
@@ -1080,7 +1132,7 @@ class 群唤醒增强Pro(Star):
     async def 指令_设置条件(
         self, event: AstrMessageEvent, 序号: str, 字段: str, 值: str, 群号: str = None
     ):
-        """修改条件：/设置条件 <序号> <字段> <值> [群号]
+        """修改条件：/设置条件 <序号|L序号> <字段> <值> [群号]
         字段：开关 / 提示词 / 正则 / 概率 / 概率方式 / 概率冷却
         """
         规则, 错误 = self._查找规则(群号, event)
@@ -1088,14 +1140,14 @@ class 群唤醒增强Pro(Star):
             yield event.plain_result(错误)
             return
 
-        条件列表 = 规则.get("条件") or []
         try:
-            位置 = int(str(序号).strip())
-        except (TypeError, ValueError):
-            yield event.plain_result("❌ 序号必须是整数，用 /条件列表 查看")
+            阶段, 条件列表, 位置 = self._解析条件目标(规则, 序号)
+        except ValueError as e:
+            yield event.plain_result(f"❌ {e}")
             return
+        阶段名 = "LLM 请求前" if 阶段 == "LLM" else "接收消息"
         if not (1 <= 位置 <= len(条件列表)):
-            yield event.plain_result(f"❌ 序号超出范围（共 {len(条件列表)} 条）")
+            yield event.plain_result(f"❌ 序号超出范围（{阶段名}流水线共 {len(条件列表)} 条）")
             return
 
         条件 = 条件列表[位置 - 1]
@@ -1146,8 +1198,9 @@ class 群唤醒增强Pro(Star):
             return
 
         await self._保存()
+        标签 = f"L{位置}" if 阶段 == "LLM" else str(位置)
         yield event.plain_result(
-            f"✅ 已更新第 {位置} 条条件「{条件.get('类型')}」的 {字段}"
+            f"✅ 已更新 {标签} 条件「{条件.get('类型')}」的 {字段}"
         )
 
     @filter.command("所有指令")
@@ -1225,6 +1278,29 @@ class 群唤醒增强Pro(Star):
             if 目标 in (规则.get("备注"), 规则.get("id")) or 目标 in (规则.get("群号") or []):
                 return 规则, ""
         return None, f"❌ 未找到群号/备注/ID 为「{目标}」的规则"
+
+    @staticmethod
+    def _解析条件目标(
+        规则: dict[str, Any], 序号文本: str
+    ) -> tuple[str, list[dict[str, Any]], int]:
+        """解析条件序号：`L1` 指向 LLM 请求前流水线，纯数字指向接收消息流水线。
+
+        返回 (阶段, 条件列表, 1 基位置)；解析失败抛 ValueError。
+        """
+        文本 = str(序号文本 or "").strip()
+        if 文本[:1] in ("L", "l"):
+            阶段 = "LLM"
+            数字 = 文本[1:]
+            条件列表 = 规则.get("LLM前条件") or []
+        else:
+            阶段 = "接收"
+            数字 = 文本
+            条件列表 = 规则.get("条件") or []
+        try:
+            位置 = int(数字)
+        except (TypeError, ValueError) as e:
+            raise ValueError("序号必须是整数，LLM 请求前流水线请写成 L1、L2…") from e
+        return 阶段, 条件列表, 位置
 
     def _转换值(self, 键: str, 值: str, 原值: Any, 原类型: type, 操作: str) -> Any:
         if 原类型 is bool:
@@ -1305,16 +1381,37 @@ class 群唤醒增强Pro(Star):
                 尾巴.append(f"冷却 {冷却:g} 分钟")
         return f"（{'，'.join(尾巴)}）" if 尾巴 else ""
 
+    def _条件行(self, 序号: Any, 条件: dict[str, Any], 阶段: str = "接收") -> str:
+        类型 = 条件.get("类型")
+        动作 = models.条件类型.get(类型, {}).get("动作", "?")
+        if 阶段 == "LLM" and 动作 == "唤醒":
+            动作 = "屏蔽"  # LLM 前流水线只做屏蔽，@ / 引用类在这里也是拦
+        开关 = "✅" if 条件.get("开关") else "⏸"
+        行 = [f"{序号}. {开关} {动作}·{类型}{self._条件描述(条件)}"]
+        if 阶段 == "接收" and not 条件.get("开关") and 类型 in models.关闭即屏蔽类型:
+            行.append("      ↳ 已关闭：命中即屏蔽（不再唤醒，也不再放行）")
+        if 条件.get("提示词"):
+            行.append(f"      提示词：{条件['提示词']}")
+        return "\n".join(行)
+
     def _条件文本(self, 规则: dict[str, Any]) -> str:
-        条件列表 = 规则.get("条件") or []
-        行 = [f"🧩 规则「{规则.get('备注')}」的条件流水线（共 {len(条件列表)} 条，从上到下判断）"]
-        for 序号, 条件 in enumerate(条件列表, 1):
-            类型 = 条件.get("类型")
-            动作 = models.条件类型.get(类型, {}).get("动作", "?")
-            开关 = "✅" if 条件.get("开关") else "⏸"
-            行.append(f"{序号}. {开关} {动作}·{类型}{self._条件描述(条件)}")
-            if 条件.get("提示词"):
-                行.append(f"      提示词：{条件['提示词']}")
+        接收 = 规则.get("条件") or []
+        LLM前 = 规则.get("LLM前条件") or []
+        名称 = 规则.get("备注")
+        行 = [f"🧩 规则「{名称}」· 接收消息流水线（{len(接收)} 条，从上到下判断）"]
+        行.extend(self._条件行(序号, 条件) for 序号, 条件 in enumerate(接收, 1))
+
+        行.append("")
+        行.append(f"🤖 规则「{名称}」· LLM 请求前流水线（{len(LLM前)} 条，只认屏蔽）")
+        if LLM前:
+            行.extend(
+                self._条件行(f"L{序号}", 条件, "LLM") for 序号, 条件 in enumerate(LLM前, 1)
+            )
+        else:
+            行.append("（空：进入模型前不再额外拦截）")
+
+        行.append("")
+        行.append("• 序号带 L 的操作对应 LLM 前流水线，例如 /删除条件 L1、/移动条件 L2 上")
         return "\n".join(行)
 
     def _规则文本(self, 群号: str, 规则: dict[str, Any], 来源: str) -> str:
@@ -1342,9 +1439,8 @@ class 群唤醒增强Pro(Star):
             f"｜指令不唤醒：{'✅' if 规则.get('指令不唤醒') else '❌'}",
             "— 其他 —",
             f"• 用户黑白名单：{acl.名单描述(规则.get('用户黑白名单'))}",
-            f"• 屏蔽空消息链：{'✅' if 规则.get('屏蔽空消息链') else '❌'}"
-            f"｜管理员豁免：{'✅' if 规则.get('管理员豁免') else '❌'}",
-            f"• 规则提示词：{规则.get('唤醒提示词') or '（未设置）'}",
+            f"• 管理员豁免：{'✅' if 规则.get('管理员豁免') else '❌'}",
+            f"• standby 监听提示词：{规则.get('唤醒提示词') or '（未设置）'}",
             "",
             self._条件文本(规则),
         ]

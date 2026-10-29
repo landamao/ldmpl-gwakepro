@@ -1,7 +1,8 @@
 /* 群唤醒增强 Pro · 规则面板
  *
- * 数据模型：一条规则 = 一批设置 + 一条条件流水线。
- * 条件数组的顺序就是判断顺序（从上到下），第一条命中的决定「唤醒」还是「屏蔽」；
+ * 数据模型：一条规则 = 一批设置 + 两条条件流水线。
+ * ① 接收消息（rule.条件）：消息进来时判断，第一条命中的决定唤醒还是屏蔽；
+ * ② LLM 请求前（rule.LLM前条件）：进入模型前再判一次，只放屏蔽类条件。
  * 唤醒类条件可以带自己的 system_reminder 提示词。
  *
  * 性能：全部静态 DOM + CSS，无 canvas / 无动画循环 / 无 backdrop-filter。
@@ -133,9 +134,50 @@
     监听唤醒提示词: "监听唤醒",
   };
 
-  function conditionsOf(rule) {
-    return Array.isArray(rule.条件) ? rule.条件 : [];
+  /* ---------------------------------------------------------------- 两段流水线 */
+
+  const STAGES = {
+    recv: {
+      key: "条件",
+      icon: "⇅",
+      title: "接收消息 · 判断流水线",
+      sub: "消息进来时逐条判断，第一条命中的决定唤醒或屏蔽",
+      empty:
+        "还没有条件：插件不唤醒也不屏蔽，完全交给框架默认判定" +
+        "（框架自己仍会把 @机器人、引用机器人当成唤醒）。",
+      add: "＋ 添加条件",
+      cls: "",
+      picker: "接收消息流水线",
+    },
+    llm: {
+      key: "LLM前条件",
+      icon: "⌛",
+      title: "LLM 请求前 · 判断流水线",
+      sub: "进入模型前再判一次，只做屏蔽：不出声，也不打断其他插件",
+      empty: "留空 = 不额外拦截，按接收流水线与框架的判定进入模型。",
+      add: "＋ 添加 LLM 前条件",
+      cls: "llm",
+      picker: "LLM 请求前流水线",
+    },
+  };
+
+  function conditionsOf(rule, stage = "recv") {
+    const list = rule[STAGES[stage].key];
+    return Array.isArray(list) ? list : [];
   }
+
+  function stageTypes(stage) {
+    const types = (S.data && S.data.条件类型) || [];
+    const flag = stage === "llm" ? "LLM" : "接收";
+    return types.filter((t) => (t.阶段 || ["接收"]).includes(flag));
+  }
+
+  // @ / 引用类唤醒：开启 = 命中即唤醒，关闭 = 命中即屏蔽（框架也会按这两类唤醒）
+  const OFF_HINT = {
+    艾特唤醒: "已关闭：@ 了机器人的消息会被直接屏蔽（不再唤醒）",
+    引用唤醒: "已关闭：@机器人且引用了它的消息会被直接屏蔽（不再唤醒）",
+    无艾特引用唤醒: "已关闭：只引用机器人、没 @ 的消息会被直接屏蔽（不再唤醒）",
+  };
 
   /* ---------------------------------------------------------------- 数据 */
 
@@ -205,9 +247,14 @@
     );
   }
 
-  function select(id, opts = {}) {
+  async function select(id, opts = {}) {
     if (S.dirty && !opts.force) {
-      if (!window.confirm("当前修改尚未保存，确定要切换规则吗？")) return;
+      const ok = await confirmDialog("当前修改尚未保存，切换后会丢弃这些修改。确定要切换规则吗？", {
+        title: "有未保存的修改",
+        okText: "丢弃并切换",
+        danger: true,
+      });
+      if (!ok) return;
     }
     const source =
       id === "fallback" ? S.data.兜底规则 : S.data.规则列表.find((r) => r.id === id);
@@ -267,31 +314,33 @@
     toggle.checked = !!rule.开关;
 
     const groups = (rule.群号 || []).map((g) => (g === "*" ? "全部群" : g)).join("、") || "未绑定群号";
-    const condCount = (rule.条件 || []).length;
+    const condCount = conditionsOf(rule, "recv").length;
+    const llmCount = conditionsOf(rule, "llm").length;
+    const condText = llmCount ? `${condCount} 条条件 · ${llmCount} 条 LLM 前` : `${condCount} 条条件`;
 
-    const move =
-      fallback || total < 2
-        ? null
-        : el(
-            "div",
-            { class: "rule-move", onclick: (e) => e.stopPropagation() },
-            el("button", {
-              class: "mv-btn",
-              type: "button",
-              text: "▲",
-              title: "上移（更优先）",
-              disabled: index <= 0,
-              onclick: () => moveRule(rule, -1),
-            }),
-            el("button", {
-              class: "mv-btn",
-              type: "button",
-              text: "▼",
-              title: "下移",
-              disabled: index >= total - 1,
-              onclick: () => moveRule(rule, 1),
-            })
-          );
+    // 只有一条规则时也把按钮画出来（置灰），不然新建规则后完全看不到调整入口
+    const move = fallback
+      ? null
+      : el(
+          "div",
+          { class: "rule-move", onclick: (e) => e.stopPropagation() },
+          el("button", {
+            class: "mv-btn",
+            type: "button",
+            text: "▲",
+            title: "上移（更优先）",
+            disabled: index <= 0,
+            onclick: () => moveRule(rule, -1),
+          }),
+          el("button", {
+            class: "mv-btn",
+            type: "button",
+            text: "▼",
+            title: "下移",
+            disabled: index >= total - 1,
+            onclick: () => moveRule(rule, 1),
+          })
+        );
 
     return el(
       "div",
@@ -322,7 +371,7 @@
           rule.备注 || (fallback ? "兜底规则" : "未命名规则"),
           fallback ? el("span", { class: "pill", text: "兜底" }) : null
         ),
-        el("div", { class: "rule-sub", text: `${groups} · ${condCount} 条条件` }),
+        el("div", { class: "rule-sub", text: `${groups} · ${condText}` }),
         conflicts.length
           ? el("div", {
               class: "rule-flag",
@@ -350,8 +399,12 @@
   }
 
   async function moveRule(rule, delta) {
-    if (S.dirty && !window.confirm("有未保存的修改，移动规则会重新载入并丢弃它们，确定继续吗？")) {
-      return;
+    if (S.dirty) {
+      const ok = await confirmDialog(
+        "有未保存的修改，移动规则会重新载入并丢弃它们。确定继续吗？",
+        { title: "有未保存的修改", okText: "丢弃并移动", danger: true }
+      );
+      if (!ok) return;
     }
     S.dirty = false;
     try {
@@ -387,7 +440,8 @@
       style: "display:flex;flex-direction:column;gap:14px",
     });
     view.append(renderHero(rule, fallback));
-    view.append(renderPipeline(rule));
+    view.append(renderPipeline(rule, "recv"));
+    view.append(renderPipeline(rule, "llm"));
     for (const section of SETTING_SECTIONS) {
       const rows = section.rows.filter((r) => !(fallback && r.hideInFallback));
       if (!rows.length) continue;
@@ -436,7 +490,13 @@
         el(
           "div",
           { class: "hero-meta" },
-          el("span", { class: "chipstat", text: `${(rule.条件 || []).length} 条条件` }),
+          el("span", { class: "chipstat", text: `${conditionsOf(rule, "recv").length} 条条件` }),
+          conditionsOf(rule, "llm").length
+            ? el("span", {
+                class: "chipstat",
+                text: `${conditionsOf(rule, "llm").length} 条 LLM 前`,
+              })
+            : null,
           el("span", { class: "chipstat", text: `${(rule.群号 || []).length} 个群` }),
           el("span", { class: "chipstat", text: fallback ? "内置" : `id ${rule.id}` })
         ),
@@ -451,43 +511,41 @@
     );
   }
 
-  function renderPipeline(rule) {
-    const list = conditionsOf(rule);
+  function renderPipeline(rule, stage = "recv") {
+    const meta = STAGES[stage];
+    const list = conditionsOf(rule, stage);
     const body = el("div", { class: "panel-body" });
     const pipe = el("div", { class: "pipeline" });
 
     if (!list.length) {
-      pipe.append(
-        el("div", {
-          class: "rule-sub",
-          text: "还没有条件。至少加一条「艾特唤醒」，否则这个群不会响应任何消息。",
-        })
-      );
+      pipe.append(el("div", { class: "rule-sub", text: meta.empty }));
     }
 
-    list.forEach((条件, index) => pipe.append(renderCondition(rule, 条件, index + 1, list.length)));
+    list.forEach((条件, index) =>
+      pipe.append(renderCondition(rule, 条件, index + 1, list.length, stage))
+    );
 
     const addBtn = el("button", {
       class: "add-cond",
       type: "button",
-      text: "＋ 添加条件",
-      onclick: () => openTypePicker(rule),
+      text: meta.add,
+      onclick: () => openTypePicker(rule, stage),
     });
 
     body.append(pipe, addBtn);
 
     return el(
       "section",
-      { class: "panel" },
+      { class: `panel ${meta.cls}` },
       el(
         "div",
         { class: "panel-head" },
-        el("span", { class: "panel-icon", text: "⇅" }),
+        el("span", { class: "panel-icon", text: meta.icon }),
         el(
           "div",
           {},
-          el("div", { class: "panel-title", text: "判断流水线" }),
-          el("div", { class: "panel-sub", text: "从上到下逐条判断，第一条命中的决定唤醒或屏蔽" })
+          el("div", { class: "panel-title", text: meta.title }),
+          el("div", { class: "panel-sub", text: meta.sub })
         ),
         el(
           "div",
@@ -500,8 +558,8 @@
     );
   }
 
-  function moveCondition(rule, index, delta) {
-    const list = rule.条件 || [];
+  function moveCondition(rule, stage, index, delta) {
+    const list = rule[STAGES[stage].key] || [];
     const to = index + delta;
     if (to < 0 || to >= list.length) return;
     const [item] = list.splice(index, 1);
@@ -510,9 +568,17 @@
     renderEditor();
   }
 
-  function renderCondition(rule, 条件, index, total) {
+  function removeCondition(rule, stage, 条件) {
+    const key = STAGES[stage].key;
+    rule[key] = (rule[key] || []).filter((c) => c.id !== 条件.id);
+    markDirty();
+    renderEditor();
+  }
+
+  function renderCondition(rule, 条件, index, total, stage = "recv") {
     const meta = typeMeta(条件.类型);
-    const isWake = meta.动作 === "唤醒";
+    // LLM 前流水线只做屏蔽：同一类型在这里按「屏蔽」呈现
+    const isWake = stage === "recv" && meta.动作 === "唤醒";
     const params = meta.参数 || [];
 
     const card = el("article", {
@@ -525,6 +591,8 @@
         条件.开关 = e.target.checked;
         card.classList.toggle("off", !e.target.checked);
         markDirty();
+        // 关闭/开启都要切换下方提示（红色屏蔽提示 或 灰色跳过提示），直接重绘
+        renderEditor();
       },
     });
     sw.checked = !!条件.开关;
@@ -534,11 +602,7 @@
       type: "button",
       text: "×",
       title: "删除此条件",
-      onclick: () => {
-        rule.条件 = (rule.条件 || []).filter((c) => c.id !== 条件.id);
-        markDirty();
-        renderEditor();
-      },
+      onclick: () => removeCondition(rule, stage, 条件),
     });
 
     const moveBtns = el(
@@ -550,7 +614,7 @@
         text: "▲",
         title: "上移（更先判断）",
         disabled: index <= 1,
-        onclick: () => moveCondition(rule, index - 1, -1),
+        onclick: () => moveCondition(rule, stage, index - 1, -1),
       }),
       el("button", {
         class: "mv-btn",
@@ -558,7 +622,7 @@
         text: "▼",
         title: "下移",
         disabled: index >= total,
-        onclick: () => moveCondition(rule, index - 1, 1),
+        onclick: () => moveCondition(rule, stage, index - 1, 1),
       })
     );
 
@@ -582,6 +646,18 @@
         )
       )
     );
+
+    const offHint = stage === "recv" && !条件.开关 ? OFF_HINT[条件.类型] : "";
+    if (offHint) {
+      card.append(el("div", { class: "cond-note", text: offHint }));
+    } else if (!条件.开关) {
+      card.append(
+        el("div", {
+          class: "cond-note muted",
+          text: "已关闭：这条不参与判断，流水线会继续往下执行",
+        })
+      );
+    }
 
     if (params.includes("正则") || params.includes("概率") || isWake) {
       const body = el("div", { class: "cond-body" });
@@ -641,29 +717,27 @@
           )
         );
 
-        const coolInput = el("input", {
-          class: "input num",
-          type: "number",
-          min: "0",
-          step: "1",
-          value: 条件.概率冷却 ?? 0,
-          oninput: (e) => {
-            const n = Number(e.target.value);
-            条件.概率冷却 = Number.isFinite(n) && n > 0 ? Math.min(n, 10080) : 0;
-            markDirty();
-          },
-          onblur: (e) => {
-            if (e.target.value === "") e.target.value = 条件.概率冷却 ?? 0;
-          },
-        });
         body.append(
           renderField(
             "概率冷却",
             el(
               "div",
-              { class: "inline-unit" },
-              coolInput,
-              el("span", { class: "unit", text: "分钟内不再判断这条概率条件（0 = 不冷却）" })
+              { class: "slider-stack" },
+              sliderControl({
+                value: 条件.概率冷却 ?? 0,
+                min: 0,
+                max: 120,
+                step: 1,
+                unit: "分钟",
+                onInput: (v) => {
+                  条件.概率冷却 = Math.max(0, Math.min(10080, Math.round(v * 10) / 10));
+                  markDirty();
+                },
+              }),
+              el("span", {
+                class: "unit",
+                text: "命中后这段时间内不再判断这条概率条件（0 = 不冷却）",
+              })
             )
           )
         );
@@ -676,7 +750,8 @@
             promptEditor({
               value: 条件.提示词,
               temp: 条件.提示词临时 !== false,
-              hint: "留空 = 这条条件不注入",
+              placeholder: "留空 = 这条条件不注入",
+              hint: "",
               onInput: (v) => {
                 条件.提示词 = v;
                 markDirty();
@@ -744,18 +819,34 @@
           key: "持续活跃",
           type: "float",
           unit: "秒",
+          slider: { min: -1, max: 600, step: 5, inheritText: "秒 · 继承兜底" },
           label: "持续活跃",
-          hint: "唤醒后保持活跃的时长，活跃期内无需再艾特",
+          hint: "唤醒后保持活跃的时长，活跃期内无需再艾特；-1 = 继承兜底",
         },
-        { key: "活跃间隔", type: "float", unit: "秒", label: "活跃间隔", hint: "活跃期内两次唤醒的最小间隔" },
-        { key: "唤醒冷却", type: "float", unit: "秒", label: "唤醒冷却", hint: "同一用户唤醒后的冷却时间" },
+        {
+          key: "活跃间隔",
+          type: "float",
+          unit: "秒",
+          slider: { min: -1, max: 300, step: 1, inheritText: "秒 · 继承兜底" },
+          label: "活跃间隔",
+          hint: "活跃期内两次唤醒的最小间隔；-1 = 继承兜底",
+        },
+        {
+          key: "唤醒冷却",
+          type: "float",
+          unit: "秒",
+          slider: { min: -1, max: 600, step: 5, inheritText: "秒 · 继承兜底" },
+          label: "唤醒冷却",
+          hint: "同一用户唤醒后的冷却时间；-1 = 继承兜底",
+        },
         {
           key: "活跃提示词",
           type: "prompt",
           tempKey: "活跃提示词临时",
           restoreKey: "主动唤醒提示词",
           label: "持续活跃提示词",
-          hint: "活跃期内被唤醒时注入；留空则用「其他唤醒提示词」，再回落到全局",
+          placeholder: "留空 = 不注入",
+          hint: "活跃期内被唤醒时注入；留空 = 不注入（和条件提示词一致）",
         },
         { key: "活跃方式", type: "select", optionsKey: "活跃方式", label: "活跃方式", hint: "从哪一刻开始计时" },
         {
@@ -792,7 +883,7 @@
           key: "禁前唤醒",
           type: "switch",
           label: "禁止前缀唤醒",
-          hint: "输入不存在的指令（如 /asdf）时不唤醒 LLM",
+          hint: "输入不存在的指令（如 /asdf）时不进 LLM",
         },
         {
           key: "指令不唤醒",
@@ -818,12 +909,6 @@
           rows: 4,
         },
         {
-          key: "屏蔽空消息链",
-          type: "switch",
-          label: "屏蔽空消息链",
-          hint: "消息链为空的事件也终止传播",
-        },
-        {
           key: "管理员豁免",
           type: "switch",
           label: "管理员豁免",
@@ -834,9 +919,9 @@
           type: "prompt",
           tempKey: "唤醒提示词临时",
           restoreKey: "监听唤醒提示词",
-          label: "其他唤醒提示词",
-          placeholder: "留空 = 回落到全局提示词",
-          hint: "监听等没有专属提示词的唤醒使用；「恢复默认」取全局设置",
+          label: "standby 监听提示词",
+          placeholder: "留空 = 不注入",
+          hint: "只在 standby 工具（监听）命中时注入；别的唤醒不会用它",
         },
       ],
     },
@@ -874,7 +959,20 @@
         control = numberControl(rule, row.key, { step: 1 });
         break;
       case "float":
-        control = numberControl(rule, row.key, { step: 0.5, unit: row.unit });
+        control = row.slider
+          ? sliderControl({
+              value: rule[row.key],
+              min: row.slider.min,
+              max: row.slider.max,
+              step: row.slider.step || 1,
+              unit: row.unit || "",
+              inheritText: row.slider.inheritText || "",
+              onInput: (v) => {
+                rule[row.key] = Math.round(v * 10) / 10;
+                markDirty();
+              },
+            })
+          : numberControl(rule, row.key, { step: 0.5, unit: row.unit });
         break;
       case "select":
         control = selectControl(rule, row.key, opt(row.optionsKey || row.key));
@@ -955,6 +1053,74 @@
       el("span", { class: "switch-track" }),
       el("span", { class: "switch-text", text: "开启" })
     );
+  }
+
+  /**
+   * 数字 + 滑块联动：滑块负责拖拽，输入框负责精确值。
+   * 输入框里填了超出滑块上限的数字时，滑块上限会自动跟着放大，两者不会打架。
+   */
+  function sliderControl({
+    value,
+    min = 0,
+    max = 100,
+    step = 1,
+    unit = "",
+    inheritText = "",
+    onInput,
+  }) {
+    let current = Number(value);
+    if (!Number.isFinite(current)) current = min;
+
+    const top = () => Math.max(max, current);
+    const num = el("input", {
+      class: "input num",
+      type: "number",
+      step: String(step),
+      value: String(current),
+    });
+    const range = el("input", { type: "range", step: String(step) });
+    const tail = el("span", { class: "unit" });
+
+    const paintTail = () => {
+      tail.textContent = inheritText && current < 0 ? inheritText : unit;
+    };
+    const refresh = () => {
+      range.min = String(min);
+      range.max = String(top());
+      range.value = String(Math.min(Math.max(current, min), top()));
+      num.value = String(current);
+      paintTail();
+    };
+
+    range.addEventListener("input", (e) => {
+      current = Number(e.target.value);
+      num.value = String(current);
+      paintTail();
+      if (onInput) onInput(current);
+    });
+
+    num.addEventListener("input", (e) => {
+      const raw = e.target.value;
+      if (raw === "" || raw === "-") return;
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return;
+      current = n;
+      range.max = String(top());
+      range.value = String(Math.min(Math.max(n, min), top()));
+      paintTail();
+      if (onInput) onInput(n);
+    });
+
+    num.addEventListener("blur", () => {
+      if (num.value === "" || num.value === "-") {
+        current = min;
+        if (onInput) onInput(current);
+      }
+      refresh();
+    });
+
+    refresh();
+    return el("div", { class: "slider-row" }, range, num, unit || inheritText ? tail : null);
   }
 
   function numberControl(rule, key, { step = 0.5, unit } = {}) {
@@ -1137,6 +1303,9 @@
   }
 
   /** 提示词编辑器：文本 + 「临时」开关 + 恢复默认。 */
+  // 临时开关旁边那行说明：讲的是开关本身的作用
+  const TEMP_HINT = "临时：开 = 只对本次请求生效（不写入历史）；关 = 持久写入上下文";
+
   function promptEditor({ value, temp, hint, placeholder, onInput, onTemp, onRestore }) {
     const area = el("textarea", {
       class: "textarea prompt-area",
@@ -1169,7 +1338,7 @@
           el("span", { class: "switch-track" }),
           el("span", { class: "switch-text", text: "临时" })
         ),
-        el("span", { class: "prompt-hint", text: hint || "" }),
+        el("span", { class: "prompt-hint", text: hint || TEMP_HINT }),
         el("button", {
           class: "btn tiny ghost",
           type: "button",
@@ -1182,8 +1351,10 @@
 
   /** 自绘下拉：不用原生 select，样式与主题一致。 */
   function dropdown({ value, options, onChange, minWidth }) {
+    // 选中后必须更新这份「当前值」，否则再次打开菜单时高亮的还是初始那个
+    let current = value;
     const wrap = el("div", { class: "dd" });
-    const label = el("span", { class: "dd-label", text: String(value ?? "") });
+    const label = el("span", { class: "dd-label", text: String(current ?? "") });
     const btn = el("button", {
       class: "dd-btn",
       type: "button",
@@ -1192,6 +1363,15 @@
     btn.append(label, el("span", { class: "dd-caret", text: "▾" }));
 
     const menu = el("div", { class: "dd-menu", role: "listbox" });
+
+    // 选完之后按钮上的文字和高亮都要跟着变，否则界面看着还是旧值
+    const setLabel = (next) => {
+      current = next;
+      label.textContent = String(next ?? "");
+      for (const item of menu.querySelectorAll(".dd-item")) {
+        item.classList.toggle("on", item.textContent === String(next));
+      }
+    };
 
     const close = () => {
       if (S.openDD && S.openDD.menu === menu) S.openDD = null;
@@ -1224,10 +1404,11 @@
       for (const option of options) {
         menu.append(
           el("button", {
-            class: `dd-item ${option === value ? "on" : ""}`,
+            class: `dd-item ${option === current ? "on" : ""}`,
             type: "button",
             text: option,
             onclick: () => {
+              setLabel(option);
               onChange(option);
               close();
             },
@@ -1302,7 +1483,12 @@
   }
 
   async function removeRule(rule) {
-    if (!window.confirm(`确定删除规则「${rule.备注 || rule.id}」吗？该操作不可撤销。`)) return;
+    const ok = await confirmDialog(`确定删除规则「${rule.备注 || rule.id}」吗？该操作不可撤销。`, {
+      title: "删除规则",
+      okText: "删除",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await apiPost("api/rule/delete", { id: rule.id });
       S.dirty = false;
@@ -1349,6 +1535,47 @@
     modal.classList.add("hidden");
     modal.replaceChildren();
     document.removeEventListener("keydown", escClose);
+    // 确认框被 Esc / 点背景关掉时按「取消」处理，避免 Promise 一直挂着
+    if (S.pendingConfirm) {
+      const cancel = S.pendingConfirm;
+      S.pendingConfirm = null;
+      cancel();
+    }
+  }
+
+  /* 面板自己的确认框：插件页跑在 iframe 里，window.confirm 可能被浏览器静默拦掉 */
+  function confirmDialog(message, opts = {}) {
+    return new Promise((resolve) => {
+      const answer = (ok) => {
+        S.pendingConfirm = null;
+        closeModal();
+        resolve(ok);
+      };
+      S.pendingConfirm = () => resolve(false);
+      openModal(
+        modalShell(
+          opts.title || "请确认",
+          el("div", { class: "modal-body" }, el("p", { class: "confirm-text", text: message })),
+          el(
+            "div",
+            { class: "modal-foot" },
+            el("button", {
+              class: "btn ghost",
+              type: "button",
+              text: "取消",
+              onclick: () => answer(false),
+            }),
+            el("button", {
+              class: `btn ${opts.danger ? "danger" : "primary"}`,
+              type: "button",
+              text: opts.okText || "确定",
+              onclick: () => answer(true),
+            })
+          )
+        ),
+        { narrow: true }
+      );
+    });
   }
 
   function modalShell(title, body, footer) {
@@ -1366,12 +1593,17 @@
     );
   }
 
-  function openTypePicker(rule) {
-    const types = S.data.条件类型 || [];
+  function openTypePicker(rule, stage = "recv") {
+    const 阶段 = STAGES[stage];
+    // LLM 前流水线只做屏蔽：同一类型在这里归到「屏蔽」组
+    const types = stageTypes(stage).map((t) => ({
+      ...t,
+      动作: stage === "llm" ? "屏蔽" : t.动作,
+    }));
     const groups = [
       { 动作: "唤醒", 类型: types.filter((t) => t.动作 === "唤醒") },
       { 动作: "屏蔽", 类型: types.filter((t) => t.动作 === "屏蔽") },
-    ];
+    ].filter((g) => g.类型.length);
 
     const body = el("div", { class: "modal-body" });
     for (const group of groups) {
@@ -1384,11 +1616,12 @@
               class: `type-card ${group.动作 === "屏蔽" ? "block" : ""}`,
               type: "button",
               onclick: () => {
-                rule.条件 = [...(rule.条件 || []), newCondition(meta.类型)];
+                const list = rule[阶段.key] || (rule[阶段.key] = []);
+                list.push(newCondition(meta.类型));
                 markDirty();
                 closeModal();
                 renderEditor();
-                toast(`已添加「${meta.类型}」，默认排在最后`, "ok");
+                toast(`已添加到${阶段.picker}，默认排在最后`, "ok");
               },
             },
             el("b", { text: meta.类型 }),
@@ -1399,7 +1632,7 @@
       body.append(el("div", { class: "type-group" }, el("h4", { text: group.动作 }), grid));
     }
 
-    openModal(modalShell("添加条件", body));
+    openModal(modalShell(`添加条件 · ${阶段.picker}`, body));
   }
 
   function newCondition(type) {
@@ -1564,10 +1797,23 @@
     grid.append(
       lines("黑名单群聊", "一行一个群号", "这些群的消息会被直接终止，管理员也受影响"),
       lines("额外指令", "一行一个指令名", "框架没扫描到的指令，补充给指令黑白名单使用"),
-      row("提示词注入", switchControl(settings, "提示词注入"), "在 LLM 请求前注入 system_reminder"),
+      row(
+        "提示词注入",
+        switchControl(settings, "提示词注入"),
+        "总开关：关掉后条件、活跃、监听三类提示词都不再注入"
+      ),
       row(
         "监听最大秒数",
-        numberControl(settings, "监听最大秒数", { step: 5 }),
+        sliderControl({
+          value: settings["监听最大秒数"],
+          min: 5,
+          max: 600,
+          step: 5,
+          unit: "秒",
+          onInput: (v) => {
+            settings["监听最大秒数"] = Math.max(5, Math.round(v));
+          },
+        }),
         "standby 工具允许的最长监听时间"
       ),
       row(
@@ -1581,15 +1827,29 @@
           },
         }),
         "user 只监听发起者，all 监听全群"
-      ),
-      row("日志详细", switchControl(settings, "日志详细"), "日志里记录每条未命中的条件消息")
+      )
+    );
+
+    grid.append(
+      el(
+        "div",
+        { class: "srow" },
+        el(
+          "div",
+          { class: "srow-label" },
+          el("b", { text: "提示词模板" }),
+          el("span", {
+            text: "下面 4 条只给规则里的「恢复默认」取用；规则留空就是不注入",
+          })
+        )
+      )
     );
 
     for (const [key, hint] of [
-      ["主动唤醒提示词", "活跃窗口等主动唤醒时使用；概率唤醒条件的「恢复默认」也取这段"],
-      ["提及唤醒提示词", "艾特 / 唤醒正则的默认文案，条件里的「恢复默认」取这段"],
-      ["引用唤醒提示词", "引用唤醒的默认文案，条件里的「恢复默认」取这段"],
-      ["监听唤醒提示词", "standby 监听命中时使用"],
+      ["主动唤醒提示词", "持续活跃 / 概率唤醒条件的「恢复默认」取这段"],
+      ["提及唤醒提示词", "艾特 / 唤醒正则条件的「恢复默认」取这段"],
+      ["引用唤醒提示词", "引用类条件的「恢复默认」取这段"],
+      ["监听唤醒提示词", "「standby 监听提示词」的「恢复默认」取这段"],
     ]) {
       const tempKey = `${key}临时`;
       if (settings[tempKey] === undefined) settings[tempKey] = true;
@@ -1726,7 +1986,14 @@
   function bindChrome() {
     $("#btnSave").addEventListener("click", save);
     $("#btnReload").addEventListener("click", async () => {
-      if (S.dirty && !window.confirm("有未保存的修改，确定重新载入吗？")) return;
+      if (S.dirty) {
+        const ok = await confirmDialog("有未保存的修改，重新载入会丢弃它们。确定继续吗？", {
+          title: "有未保存的修改",
+          okText: "丢弃并重载",
+          danger: true,
+        });
+        if (!ok) return;
+      }
       S.dirty = false;
       await load({ keepSelection: true });
       toast("已重新载入", "ok");
@@ -1745,7 +2012,12 @@
     });
 
     $("#btnClearState").addEventListener("click", async () => {
-      if (!window.confirm("清空活跃窗口、冷却与监听状态？不影响规则配置。")) return;
+      const ok = await confirmDialog("清空活跃窗口、冷却与监听状态？不影响规则配置。", {
+        title: "清空运行时状态",
+        okText: "清空",
+        danger: true,
+      });
+      if (!ok) return;
       try {
         await apiPost("api/state/clear", {});
         await load({ keepSelection: true });

@@ -107,6 +107,16 @@
   }
 
   const isFallback = (rule) => !!rule && rule.id === "fallback";
+
+  // 兜底规则下面没有更下层可继承，-1（继承兜底）对它没有意义：读进来先收敛成 0
+  const 时间键 = ["持续活跃", "活跃间隔", "唤醒冷却"];
+  function 收敛兜底时间(rule) {
+    for (const key of 时间键) {
+      const value = Number(rule[key]);
+      rule[key] = Number.isFinite(value) && value > 0 ? value : 0;
+    }
+  }
+
   const typeMeta = (type) =>
     (S.data.条件类型 || []).find((i) => i.类型 === type) || { 动作: "唤醒", 说明: "", 参数: [] };
   const opt = (key) => (S.data.选项 || {})[key] || FALLBACK_OPTIONS[key] || [];
@@ -259,6 +269,7 @@
     if (!source) return;
     S.selected = id;
     S.draft = clone(source);
+    if (isFallback(S.draft)) 收敛兜底时间(S.draft);
     S.dirty = false;
     setBadge("已同步", "ok");
     renderSidebar();
@@ -345,28 +356,31 @@
         );
 
     // 「复制」不常用：只留一个小图标，挂在条目右下角，平时不抢位置
-    const copyBtn = fallback
-      ? null
-      : el("button", {
-          class: "rule-copy",
-          type: "button",
-          title: "复制这条规则：设置与条件照抄，群号与备注会清空",
-          "aria-label": "复制规则",
-          html:
-            '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">' +
-            '<rect x="4" y="1.3" width="6.7" height="6.7" rx="1.6" />' +
-            '<rect x="1.3" y="4" width="6.7" height="6.7" rx="1.6" />' +
-            "</svg>",
-          onclick: (e) => {
-            e.stopPropagation();
-            duplicateRule(rule);
-          },
-        });
+    // 兜底规则也能复制——复制出来是一条普通规则，正好拿来当模板
+    const copyBtn = el("button", {
+      class: "rule-copy",
+      type: "button",
+      title: fallback
+        ? "把兜底规则复制成一条普通规则：设置与条件照抄，群号与备注留空"
+        : "复制这条规则：设置与条件照抄，群号与备注会清空",
+      "aria-label": fallback ? "复制兜底规则" : "复制规则",
+      html:
+        '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">' +
+        '<rect x="4" y="1.3" width="6.7" height="6.7" rx="1.6" />' +
+        '<rect x="1.3" y="4" width="6.7" height="6.7" rx="1.6" />' +
+        "</svg>",
+      onclick: (e) => {
+        e.stopPropagation();
+        duplicateRule(rule);
+      },
+    });
 
     return el(
       "div",
       {
-        class: `rule-item ${S.selected === rule.id ? "active" : ""} ${rule.开关 ? "" : "is-off"}`,
+        class: `rule-item ${S.selected === rule.id ? "active" : ""} ${
+          rule.开关 ? "" : "is-off"
+        } ${fallback ? "is-fallback" : ""}`,
         role: "listitem",
         tabindex: "0",
         onclick: () => select(rule.id),
@@ -454,7 +468,12 @@
       const data = await apiPost("api/rule/duplicate", { id: rule.id });
       await load({ keepSelection: true });
       if (data && data.规则) select(data.规则.id, { force: true });
-      toast("已复制为新规则：群号、备注已清空，填好备注再保存", "ok");
+      toast(
+        isFallback(rule)
+          ? "已把兜底规则复制成一条普通规则：群号、备注留空，填好就能用"
+          : "已复制为新规则：群号、备注已清空，填好备注再保存",
+        "ok"
+      );
     } catch (e) {
       toast(`复制失败：${e.message || e}`, "error");
     }
@@ -544,6 +563,7 @@
     switchInput.checked = !!rule.开关;
 
     const 群数 = (rule.群号 || []).length;
+    const 通配群 = (rule.群号 || []).includes("*");
     if (!fallback && !群数) {
       notes.append(
         el("div", {
@@ -573,7 +593,7 @@
             : null,
           el("span", {
             class: `chipstat ${群数 ? "" : "warn"}`,
-            text: 群数 ? `${群数} 个群` : "未绑定群号",
+            text: 群数 ? (通配群 ? "全部群" : `${群数} 个群`) : "未绑定群号",
           }),
           nameChip,
           el("span", { class: "chipstat", text: fallback ? "内置" : `id ${rule.id}` })
@@ -893,6 +913,7 @@
       title: "时间控制",
       icon: "◷",
       sub: "活跃窗口与冷却，-1 表示继承兜底规则",
+      fallbackSub: "活跃窗口与冷却；兜底规则没有更下层可继承，没有 -1",
       rows: [
         {
           key: "持续活跃",
@@ -901,6 +922,7 @@
           slider: { min: -1, max: 600, step: 5, inheritText: "秒 · 继承兜底" },
           label: "持续活跃",
           hint: "唤醒后保持活跃的时长，活跃期内无需再艾特；-1 = 继承兜底",
+          fallbackHint: "唤醒后保持活跃的时长，活跃期内无需再艾特；0 = 不开启持续活跃",
         },
         {
           key: "活跃间隔",
@@ -909,6 +931,7 @@
           slider: { min: -1, max: 300, step: 1, inheritText: "秒 · 继承兜底" },
           label: "活跃间隔",
           hint: "活跃期内两次唤醒的最小间隔；-1 = 继承兜底",
+          fallbackHint: "活跃期内两次唤醒的最小间隔；0 = 不限制",
         },
         {
           key: "唤醒冷却",
@@ -917,6 +940,7 @@
           slider: { min: -1, max: 600, step: 5, inheritText: "秒 · 继承兜底" },
           label: "唤醒冷却",
           hint: "同一用户唤醒后的冷却时间；-1 = 继承兜底",
+          fallbackHint: "同一用户唤醒后的冷却时间；0 = 不冷却",
         },
         {
           key: "活跃提示词",
@@ -1000,6 +1024,7 @@
   function renderSettingsSection(section, rows, rule) {
     const srows = el("div", { class: "srows" });
     for (const row of rows) srows.append(renderSettingRow(row, rule));
+    const fallback = isFallback(rule);
 
     return el(
       "section",
@@ -1012,7 +1037,10 @@
           "div",
           {},
           el("div", { class: "panel-title", text: section.title }),
-          el("div", { class: "panel-sub", text: section.sub })
+          el("div", {
+            class: "panel-sub",
+            text: (fallback && section.fallbackSub) || section.sub,
+          })
         )
       ),
       el("div", { class: "panel-body" }, srows)
@@ -1020,6 +1048,7 @@
   }
 
   function renderSettingRow(row, rule) {
+    const fallback = isFallback(rule);
     let control;
     switch (row.type) {
       case "switch":
@@ -1032,11 +1061,12 @@
         control = row.slider
           ? sliderControl({
               value: rule[row.key],
-              min: row.slider.min,
+              // 兜底规则没有更下层可继承，滑块下限拉到 0，也不显示「继承兜底」
+              min: fallback ? Math.max(0, row.slider.min) : row.slider.min,
               max: row.slider.max,
               step: row.slider.step || 1,
               unit: row.unit || "",
-              inheritText: row.slider.inheritText || "",
+              inheritText: fallback ? "" : row.slider.inheritText || "",
               onInput: (v) => {
                 rule[row.key] = Math.round(v * 10) / 10;
                 markDirty();
@@ -1101,7 +1131,7 @@
         "div",
         { class: "srow-label" },
         el("b", { text: row.label }),
-        row.hint ? el("span", { text: row.hint }) : null
+        row.hint ? el("span", { text: (fallback && row.fallbackHint) || row.hint }) : null
       ),
       el("div", { class: `srow-control ${row.type === "switch" ? "end" : ""}` }, control)
     );

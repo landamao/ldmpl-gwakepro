@@ -495,6 +495,11 @@ body {
   opacity: 1;
 }
 
+/* 兜底规则没有 ▲▼ 那一列，右侧要自己给图标让位 */
+.rule-item.is-fallback .rule-main {
+  padding-right: 24px;
+}
+
 .rule-copy:hover {
   color: #fff;
   background: linear-gradient(130deg, #8f7bff, #56c9ee);

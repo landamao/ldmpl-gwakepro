@@ -1,4 +1,4 @@
-"""运行时状态：活跃窗口、冷却、监听、群目录。
+"""运行时状态：活跃窗口、冷却、群目录。
 
 所有状态都在内存里，进程重启即清空——这与旧插件一致，也避免把「活跃」这种
 短周期状态写进磁盘造成脏数据。群目录是唯一需要持久化的小数据，由主插件负责落盘。
@@ -9,11 +9,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-__all__ = ["运行状态", "监听键"]
-
-
-def 监听键(群号: str, 目标: str) -> tuple[str, str]:
-    return (str(群号), str(目标))
+__all__ = ["运行状态"]
 
 
 class 运行状态:
@@ -28,8 +24,6 @@ class 运行状态:
         # 用户自定义活跃（「/设置活跃」设定，群内隔离）
         self.自定义活跃: dict[tuple[str, str], float] = {}
         self.自定义时长: dict[tuple[str, str], float] = {}
-        # 监听（LLM 通过 standby 工具发起）
-        self.监听: dict[tuple[str, str], dict[str, Any]] = {}
         # 群目录：群号 -> {"名称": str, "时间": float}
         self.群目录: dict[str, dict[str, Any]] = {}
         self.最后清理 = 0.0
@@ -128,80 +122,6 @@ class 运行状态:
         现在 = time.time() if 现在 is None else 现在
         self.概率冷却[(str(群号), str(条件ID))] = 现在 + 秒
 
-    # ---------------- 监听 ----------------
-
-    def 设置监听(self, 群号: str, 目标: str, 模式: str, 秒: float, 现在: float | None = None) -> None:
-        现在 = time.time() if 现在 is None else 现在
-        self.监听[监听键(群号, 目标)] = {
-            "到期": 现在 + 秒,
-            "时长": 秒,
-            "模式": 模式,
-            "开始": 现在,
-        }
-
-    def 取消监听(self, 群号: str, 目标: str) -> bool:
-        return self.监听.pop(监听键(群号, 目标), None) is not None
-
-    def 检查监听(
-        self,
-        群号: str,
-        发送者: str,
-        现在: float | None = None,
-        *,
-        艾特了发送者: bool = False,
-    ) -> tuple[str, float]:
-        """返回（状态, 剩余秒数）。
-
-        状态：
-        - "none"  没有监听
-        - "hit"   命中监听，应唤醒
-        - "reset" 监听了该用户，但本条消息艾特了该用户，监听时长重置
-        """
-        现在 = time.time() if 现在 is None else 现在
-        用户键 = 监听键(群号, 发送者)
-        全体键 = 监听键(群号, "*")
-
-        用户监听 = self.监听.get(用户键)
-        if 用户监听:
-            if 用户监听["到期"] <= 现在:
-                self.监听.pop(用户键, None)
-            else:
-                if 艾特了发送者:
-                    用户监听["到期"] = 现在 + 用户监听["时长"]
-                    return "reset", 用户监听["到期"] - 现在
-                return "hit", 用户监听["到期"] - 现在
-
-        全体监听 = self.监听.get(全体键)
-        if 全体监听:
-            if 全体监听["到期"] <= 现在:
-                self.监听.pop(全体键, None)
-            else:
-                return "hit", 全体监听["到期"] - 现在
-
-        return "none", 0.0
-
-    def 消耗监听(self, 群号: str, 发送者: str) -> None:
-        """命中后消耗监听（监听是一次性的，命中即结束）。"""
-        self.监听.pop(监听键(群号, 发送者), None)
-        self.监听.pop(监听键(群号, "*"), None)
-
-    def 监听快照(self, 现在: float | None = None) -> list[dict[str, Any]]:
-        现在 = time.time() if 现在 is None else 现在
-        结果 = []
-        for (群号, 目标), 值 in sorted(self.监听.items()):
-            到期 = float(值.get("到期", 0))
-            if 到期 <= 现在:
-                continue
-            结果.append(
-                {
-                    "群号": 群号,
-                    "目标": 目标,
-                    "模式": 值.get("模式", "user"),
-                    "剩余": round(到期 - 现在, 1),
-                }
-            )
-        return 结果
-
     # ---------------- 群目录 ----------------
 
     def 记录群(self, 群号: str, 名称: str = "", 现在: float | None = None) -> bool:
@@ -227,8 +147,6 @@ class 运行状态:
         for 表 in (self.群上次唤醒, self.用户上次唤醒):
             for 键 in [k for k, v in 表.items() if 现在 - v > 86400]:
                 表.pop(键, None)
-        for 键 in [k for k, v in self.监听.items() if v.get("到期", 0) <= 现在]:
-            self.监听.pop(键, None)
 
     def 活跃快照(self, 现在: float | None = None) -> dict[str, Any]:
         现在 = time.time() if 现在 is None else 现在
@@ -258,5 +176,4 @@ class 运行状态:
                 for k, v in sorted(self.概率冷却.items())
                 if v > 现在
             ],
-            "监听": self.监听快照(现在),
         }

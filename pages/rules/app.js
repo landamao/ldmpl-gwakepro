@@ -131,7 +131,6 @@
     主动唤醒提示词: "主动唤醒",
     提及唤醒提示词: "提及唤醒",
     引用唤醒提示词: "引用唤醒",
-    监听唤醒提示词: "监听唤醒",
   };
 
   /* ---------------------------------------------------------------- 两段流水线 */
@@ -208,7 +207,6 @@
     $("#boundGroups").textContent = (rt.已绑定群 || []).length;
     $("#activeCount").textContent =
       (active.群聊 || []).length + (active.用户 || []).length + (active.自定义 || []).length;
-    $("#listenCount").textContent = (active.监听 || []).length;
 
     const listOfPrefixes = prefixes.length
       ? el(
@@ -897,7 +895,7 @@
       key: "misc",
       title: "其他",
       icon: "✦",
-      sub: "用户黑白名单、管理员与兜底提示词",
+      sub: "用户黑白名单与管理员豁免",
       rows: [
         {
           key: "用户黑白名单",
@@ -913,15 +911,6 @@
           type: "switch",
           label: "管理员豁免",
           hint: "管理员不受名单、冷却、屏蔽条件限制",
-        },
-        {
-          key: "唤醒提示词",
-          type: "prompt",
-          tempKey: "唤醒提示词临时",
-          restoreKey: "监听唤醒提示词",
-          label: "standby 监听提示词",
-          placeholder: "留空 = 不注入",
-          hint: "只在 standby 工具（监听）命中时注入；别的唤醒不会用它",
         },
       ],
     },
@@ -1800,33 +1789,7 @@
       row(
         "提示词注入",
         switchControl(settings, "提示词注入"),
-        "总开关：关掉后条件、活跃、监听三类提示词都不再注入"
-      ),
-      row(
-        "监听最大秒数",
-        sliderControl({
-          value: settings["监听最大秒数"],
-          min: 5,
-          max: 600,
-          step: 5,
-          unit: "秒",
-          onInput: (v) => {
-            settings["监听最大秒数"] = Math.max(5, Math.round(v));
-          },
-        }),
-        "standby 工具允许的最长监听时间"
-      ),
-      row(
-        "默认监听范围",
-        dropdown({
-          value: settings["默认监听范围"],
-          options: ["user", "all"],
-          minWidth: 168,
-          onChange: (v) => {
-            settings["默认监听范围"] = v;
-          },
-        }),
-        "user 只监听发起者，all 监听全群"
+        "总开关：关掉后条件与活跃两类提示词都不再注入"
       )
     );
 
@@ -1839,7 +1802,7 @@
           { class: "srow-label" },
           el("b", { text: "提示词模板" }),
           el("span", {
-            text: "下面 4 条只给规则里的「恢复默认」取用；规则留空就是不注入",
+            text: "下面 3 条只给规则里的「恢复默认」取用；规则留空就是不注入",
           })
         )
       )
@@ -1849,7 +1812,6 @@
       ["主动唤醒提示词", "持续活跃 / 概率唤醒条件的「恢复默认」取这段"],
       ["提及唤醒提示词", "艾特 / 唤醒正则条件的「恢复默认」取这段"],
       ["引用唤醒提示词", "引用类条件的「恢复默认」取这段"],
-      ["监听唤醒提示词", "「standby 监听提示词」的「恢复默认」取这段"],
     ]) {
       const tempKey = `${key}临时`;
       if (settings[tempKey] === undefined) settings[tempKey] = true;
@@ -2012,7 +1974,7 @@
     });
 
     $("#btnClearState").addEventListener("click", async () => {
-      const ok = await confirmDialog("清空活跃窗口、冷却与监听状态？不影响规则配置。", {
+      const ok = await confirmDialog("清空活跃窗口与冷却状态？不影响规则配置。", {
         title: "清空运行时状态",
         okText: "清空",
         danger: true,

@@ -50,10 +50,16 @@
 
 ### 安装
 
-1. 把 `群唤醒增强Pro` 目录放进 `data/plugins/`
-2. 重启程序（或热重载插件）
-3. 打开面板：**插件 → 群唤醒增强 Pro → 规则面板**
-4. 点「新建规则」填群号，然后「添加条件」
+```bash
+# 在 AstrBot 根目录执行
+git clone https://github.com/landamao/ldmpl-gwakepro.git data/plugins/群唤醒增强Pro
+```
+
+或者直接把 `群唤醒增强Pro` 目录放进 `data/plugins/`。
+
+1. 重启程序（或热重载插件）
+2. 打开面板：**插件 → 群唤醒增强 Pro → 规则面板**
+3. 点「新建规则」填群号，然后「添加条件」
 
 数据文件：`data/plugin_data/群唤醒增强Pro/rules.json`。删掉即可恢复出厂设置。
 

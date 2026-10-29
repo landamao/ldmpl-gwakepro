@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>群唤醒增强 Pro · 规则面板</title>
+    <link rel="stylesheet" href="./style.css" />
+    <!-- 由 AstrBot 插件页面服务重写为带 asset_token 的桥接地址；放在 head 保证先于 app.js 执行 -->
+    <script src="/api/plugin/page/bridge-sdk.js"></script>
+  </head>
+  <body>
+    <div class="bg-orbs" aria-hidden="true"><i></i><i></i><i></i></div>
+
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">唤</div>
+          <div class="brand-text">
+            <h1>群唤醒增强 <b>Pro</b></h1>
+            <p>条件流水线 · 从上到下逐条判断</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <span id="statusBadge" class="badge">未加载</span>
+          <button id="btnSettings" class="btn ghost" type="button">全局设置</button>
+          <button id="btnReload" class="btn ghost" type="button">重新载入</button>
+          <button id="btnNew" class="btn ghost" type="button">新建规则</button>
+          <button id="btnSave" class="btn primary" type="button">保存</button>
+        </div>
+      </header>
+
+      <div class="layout">
+        <aside class="sidebar">
+          <div class="sidebar-head">
+            <span class="sidebar-title">规则</span>
+            <span id="ruleCount" class="pill">0</span>
+          </div>
+          <div id="ruleList" class="rule-list" role="list"></div>
+          <div class="sidebar-foot">
+            <div class="foot-grid">
+              <div><span>已绑定群</span><strong id="boundGroups">0</strong></div>
+              <div><span>活跃窗口</span><strong id="activeCount">0</strong></div>
+              <div><span>监听中</span><strong id="listenCount">0</strong></div>
+            </div>
+            <details class="foot-details">
+              <summary>运行信息</summary>
+              <div id="runtimeInfo" class="runtime-info"></div>
+            </details>
+            <div class="foot-actions">
+              <button id="btnRefreshCmds" class="btn tiny ghost" type="button">刷新指令</button>
+              <button id="btnClearState" class="btn tiny ghost" type="button">清空状态</button>
+            </div>
+          </div>
+        </aside>
+
+        <main id="editor" class="editor">
+          <div class="empty-state">
+            <div class="empty-mark">◍</div>
+            <h2>选择左侧规则开始编辑</h2>
+            <p>也可以新建一条规则，为指定群号配置唤醒与屏蔽条件。</p>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+    <div id="modal" class="modal hidden" role="dialog" aria-modal="true"></div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

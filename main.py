@@ -437,6 +437,7 @@ class 群唤醒增强Pro(Star):
         try:
             全局 = self._全局()
             if not 全局.get("提示词注入", True):
+                logger.debug(f"【{插件名}】提示词注入开关已关闭，本轮不注入")
                 return
             群号 = str(event.get_group_id() or "")
             规则 = self._取规则(群号) or {}
@@ -445,6 +446,7 @@ class 群唤醒增强Pro(Star):
 
             提示词 = str(event.get_extra("qwb_唤醒提示词", "") or "").strip()
             临时 = bool(event.get_extra("qwb_提示词临时", True))
+            出处 = "条件提示词" if 提示词 else ""
             if not 提示词 and not 命中条件:
                 # 没有命中条件的唤醒只有活跃窗口会注入；
                 # 其它来源（别的插件重新唤醒等）一律不注入，免得摸不清什么时候冒出来
@@ -453,7 +455,12 @@ class 群唤醒增强Pro(Star):
                     提示词 = str(规则.get(规则键) or "").strip()
                     if 提示词:
                         临时 = bool(规则.get(f"{规则键}临时", True))
+                        出处 = "活跃提示词"
             if not 提示词:
+                logger.debug(
+                    f"【{插件名}】群 {群号} 没有可注入的提示词"
+                    f"（来源：{来源 or '未知'}，命中条件：{'是' if 命中条件 else '否'}）"
+                )
                 return
 
             部件 = TextPart(text=f"<system_reminder>{提示词}</system_reminder>")
@@ -461,6 +468,11 @@ class 群唤醒增强Pro(Star):
                 部件.mark_as_temp()
             req.leading_user_content_parts.append(部件)
             event.set_extra("qwb_已注入提示词", True)
+            logger.debug(
+                f"【{插件名}】群 {群号} 注入提示词"
+                f"（{出处 or '未知'}｜{'临时' if 临时 else '持久'}｜"
+                f"来源：{来源 or '未知'}）：{提示词}"
+            )
         except Exception as e:  # noqa: BLE001
             logger.error(f"【{插件名}】注入提示词出错：{e}", exc_info=True)
 

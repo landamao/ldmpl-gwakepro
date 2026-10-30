@@ -383,18 +383,24 @@ class 群唤醒增强Pro(Star):
                 return
 
             ctx = self._构建上下文(event)
-            if ctx.管理员 and 规则.get("管理员豁免", True):
-                return
+            豁免 = ctx.管理员 and 规则.get("管理员豁免", True)
 
-            # 禁前唤醒只拦「进入 LLM」这一步，不终止事件：别的插件照常能看到这条消息
+            # 「禁前唤醒 / 指令不唤醒」判断的是「这条消息该不该进 LLM」，属于消息路由，
+            # 不是对某个人的屏蔽，所以管理员豁免不覆盖它们——否则管理员开了设置也测不出效果。
+            # 两者都只拦「进入 LLM」这一步，不终止事件：别的插件照常能看到这条消息。
             if 规则.get("禁前唤醒") and ctx.使用前缀 and not ctx.是指令:
-                logger.info(f"【{插件名}】群 {群号} 禁止前缀唤醒：{ctx.快照.指令文本}")
+                原文 = ctx.快照.含前缀文本 or ctx.快照.去前缀文本
+                logger.info(f"【{插件名}】群 {群号} 禁止前缀唤醒：{原文}")
                 event.stop_event()
                 return
 
             if 规则.get("指令不唤醒") and ctx.是指令:
                 logger.info(f"【{插件名}】群 {群号} 指令触发后不唤醒 LLM：{ctx.快照.指令文本}")
                 event.stop_event()
+                return
+
+            # 以下都是真正的「屏蔽」：管理员豁免在这里生效
+            if 豁免:
                 return
 
             名单 = 规则.get("指令黑白名单")
@@ -505,14 +511,13 @@ class 群唤醒增强Pro(Star):
     # ------------------------------------------------------------------ LLM 工具
 
     @filter.llm_tool(name="terminate")
-    async def terminate_tool(self, event: AstrMessageEvent, reason: str = "") -> None:
+    async def terminate_tool(self, _: AstrMessageEvent, reason: str = "") -> None:
         """结束/停止本轮对话，适用于工具使用后无需继续、无需回复（不回复，不理）用户消息，使用后静默终止本轮对话
 
         Args:
             reason(string): 可选，原因，原因记录在工具调用记录上下文，不会发送到聊天
         """
         logger.info(f"【{插件名}】LLM 主动终止本轮对话：{reason or '未说明原因'}")
-        event.stop_event()
         return None
 
     # ------------------------------------------------------------------ 面板接口
@@ -1456,7 +1461,8 @@ class 群唤醒增强Pro(Star):
             f"｜指令不唤醒：{'✅' if 规则.get('指令不唤醒') else '❌'}",
             "— 其他 —",
             f"• 用户黑白名单：{acl.名单描述(规则.get('用户黑白名单'))}",
-            f"• 管理员豁免：{'✅' if 规则.get('管理员豁免') else '❌'}",
+            f"• 管理员豁免：{'✅' if 规则.get('管理员豁免') else '❌'}"
+            "（不含禁前唤醒 / 指令不唤醒）",
             "",
             self._条件文本(规则),
         ]
